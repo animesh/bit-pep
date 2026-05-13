@@ -1,557 +1,631 @@
-# Bit-Pop: Multi-Genome DNA Read Classification
+# Bit-Pep: Multi-Proteome Peptide Classification
 
-[![CI](https://github.com/mladenpop-oss/bit-pop/actions/workflows/ci.yml/badge.svg)](https://github.com/mladenpop-oss/bit-pop/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-263%2B%20unit%2C%205%20integration-blue)](https://github.com/mladenpop-oss/bit-pop)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20043593.svg)](https://doi.org/10.5281/zenodo.20043593)
+Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s)
 
-> **Ultra-fast multi-genome DNA read classification in under 1 second.** Maps 20k reads across 3 genomes at **99.3% accuracy** using a compact FM-index built in Rust with bit-level parallelism.
+## Plan @claude-code
 
-**Quick benchmark**: 19.7 Mb across 3 genomes (E. coli, S. aureus, S. cerevisiae) → **99.3% mapping rate**, **99.9% classification accuracy**, **0.9s per 10k reads**.
+# bit-pop → pepmap: Peptide Search Across Proteomes
 
-While existing aligners (Bowtie2, BWA, minimap2) map reads to single reference genomes, Bit-Pop identifies **which genome** in a collection best matches each read — making it ideal for metagenomic classification tasks.
-
-## Quick Start
-
-```bash
-# 1. Build (requires Rust: https://rustup.rs)
-git clone https://github.com/mladenpop-oss/bit-pop.git
-cd bit-pop
-cargo build --release
-
-# 2. One-command workflow: build index + map reads
-./target/release/bit-pop run \
-  data/genomes/Ecoli_K12_MG1655.fna \
-  data/reads/simulated_ecoli_10k_new.fastq
-
-# 3. Paired-end mode
-./target/release/bit-pop run \
-  data/genomes/Ecoli_K12_MG1655.fna \
-  -1 data/reads/R1.fastq -2 data/reads/R2.fastq
-
-# 4. Download from NCBI and map
-./target/release/bit-pop run \
-  --ncbi "Escherichia coli" \
-  data/reads/simulated_ecoli_10k_new.fastq
-```
-
-See [Usage](#usage) for full documentation.
-
-## Features
-
-- **Multi-genome indexing**: All reference genomes indexed in a single FM-index structure
-- **Speed via bit-level operations**: 2-bit XOR alignment achieving ~2.3 ns per 31-base XOR chunk operation
-- **Myers edit distance**: 23-54x faster alternative to Smith-Waterman for alignment
-- **Spaced seeds**: Improved sensitivity for high-error reads (Nanopore, PacBio)
-- **Adaptive k-mer size**: Auto-calculates optimal k based on genome size (`--auto-k`)
-- **Quality-aware refinement**: Smith-Waterman local alignment with Phred-scaled quality penalties
-- **Combined ranking**: Formula balancing alignment score (85%) and k-mer rarity (15%)
-- **Top-N rarest k-mer anchors**: Fallback to 2nd/3rd rarest k-mers for improved mapping rate
-- **Reverse complement support**: Full RC-aware mapping with proper SAM FLAG 0x10 handling
-- **Paired-end support**: Full SAM specification compliance with proper FLAG handling
-- **Parallel mapping**: Work-stealing scheduler using rayon for multi-core speedup
-- **Parallel index build**: Multi-threaded BWT and suffix array construction
-- **Memory-mapped FASTA**: Reduced memory footprint with `--mmap` flag
-- **Auto index caching**: Reuses `.bitpop` files when genomes haven't changed
-- **NCBI integration**: Download genomes directly from NCBI with `--ncbi` flag
-- **Progress reporting**: CLI progress bars for build and mapping operations
-- **Smart defaults**: Automatic output paths, index detection, and progress reporting
-- **Fuzzy k-mer matching**: Three methods for improved strain resolution (`--method` flag)
-- **EM post-processing**: Expectation-Maximization algorithm for multi-candidate refinement (`bit-pop em` command), +1.4pp evo_*, +4.49pp overall
-
-## Fuzzy K-mer Methods
-
-Bit-Pop supports three fuzzy k-mer matching methods for improved resolution of highly similar genomes (e.g., bacterial strains with >99.9% identity):
-
-| Method | Flag | Description |
-|--------|------|-------------|
-| **None** (default) | `--method none` | Exact k-mer matching only |
-| **Fuzzy K-mer** | `--method fuzzy-kmer --fuzzy-mismatches N` | Generate all k-mer variants with N substitutions, query FM-index for each |
-| **Fuzzy Seed** | `--method fuzzy-seed --fuzzy-mismatches N` | Allow N mismatches in spaced seed "match" positions |
-| **Neighborhood** | `--method neighborhood --fuzzy-mismatches N` | Build hash table at index build time for O(1) fuzzy lookup |
-
-**Example:**
-```bash
-bit-pop run genome.fna reads.fastq --method fuzzy-kmer --fuzzy-mismatches 1
-```
-
-**Trade-offs:**
-- `fuzzy-kmer`: Best accuracy for strain resolution, ~30x slower (N=1)
-- `fuzzy-seed`: Good balance, works with spaced seeds, ~20x slower (N=1)
-- `neighborhood`: Fastest query time, but larger index file (~60x memory for N=1)
-
-
-
-## Comparison with Existing Tools
-
-| Feature | Bit-Pop | Bowtie2 | BWA-MEM | minimap2 |
-|---------|---------|---------|---------|----------|
-| Multi-genome classification | ✅ Native | ❌ Single genome | ❌ Single genome | ⚠️ With --index |
-| Speed (10k reads, 3 genomes) | **0.9s** | ~5-10s | ~8-15s | ~3-5s |
-| Index size (19.7 Mb) | **~152 MB** | ~200 MB | ~250 MB | ~180 MB |
-| Quality-aware alignment | ✅ Phred-scaled | ✅ | ✅ | ✅ |
-| Paired-end support | ✅ | ✅ | ✅ | ✅ |
-| NCBI integration | ✅ Built-in | ❌ | ❌ | ❌ |
-| Rust + bit-parallel | ✅ | C++ | C | C++ |
-
-**When to use Bit-Pop**: Fast multi-genome classification where you need to identify which genome a read belongs to, rather than precise positional alignment.
-
-## Bit-Pop vs Kraken2 — Different Tools for Different Use Cases
-
-Kraken2 is like Google — knows everything, needs a datacenter, requires 100GB+ databases.
-Bit-Pop is like a local database — knows what you need, works offline, instant response.
-
-### Key Differences
-
-| | Bit-Pop | Kraken2 |
-|---|---------|---------|
-| Database size | MB (only your genomes) | 100GB+ (entire NCBI) |
-| Internet required | ❌ No | ✅ Yes (every update) |
-| Build time | 2 minutes | Hours to days |
-| Offline operation | ✅ Full | ❌ No |
-| Custom update | Seconds (add 1 genome) | Rebuild entire database |
-| Index growth | Grows only with your data, always clean | Fixed massive database with unused data |
-
-### When to Use Bit-Pop
-
-- **Clinical microbiology** — A hospital tracks 20 strains. Build the index once, classify every patient sample in 0.13s, offline, on a laptop.
-- **Field work** — A researcher in the Amazon with an offline laptop. 1.4GB on a USB drive, classify samples on-site.
-- **Outbreak detection** — A new bacterium appears. Download one genome (MB), add to index, classify immediately.
-- **Edge deployment** — Docker container on an IoT device, offline, instant response.
-
-Kraken2 is better for: broad metagenomics where you don't know what you're looking for.
-Bit-Pop is better for: **targeted searching** where you know what matters.
-
-## Pipeline
-
-1. **FM-index** (SA-IS via libsais) for efficient k-mer lookup
-2. **Anchor-based k-mer filtering** (top-N rarest k-mer selection with fallback)
-3. **2-bit XOR alignment** (~2.3 ns per 31-base chunk for exact/near-exact matches)
-4. **Myers edit distance** (23-54x faster alternative to Smith-Waterman)
-5. **Spaced seed** matching (optional, `-s` flag) for improved sensitivity on error-prone reads
-6. **Smith-Waterman refinement** for lower confidence scores (<0.9)
-7. **Multi-genome ranking** with combined scoring formula
-8. **Reverse complement** scoring — tries both forward and RC, returns best match
-
-## Installation
-
-### Homebrew (macOS/Linux)
-
-```bash
-brew tap mladenpop-oss/homebrew-bit-pop
-brew install bit-pop
-```
-
-### Cargo
-
-```bash
-cargo install bit-pop
-```
-
-### Pre-built Binaries
-
-Download from [GitHub Releases](https://github.com/mladenpop-oss/bit-pop/releases).
-
-### From Source
-
-#### Prerequisites
-
-- Rust toolchain (2021 edition)
-
-```bash
-git clone https://github.com/mladenpop-oss/bit-pop.git
-cd bit-pop
-cargo build --release
-```
-
-### Optional Dependencies
-
-- Python 3.x with Biopython - only required for read simulation (`scripts/simulate_reads.py`)
-
-## Usage
-
-### One-Command Workflow (Recommended)
-
-```bash
-# Single-end mode
-./target/release/bit-pop run genome.fna reads.fastq
-
-# Single-end with explicit reads flag
-./target/release/bit-pop run genome.fna -r reads.fastq
-
-# Paired-end mode
-./target/release/bit-pop run genome.fna -1 R1.fastq -2 R2.fastq
-
-# Multiple genomes from folder
-./target/release/bit-pop run genomes/ reads.fastq
-
-# Download from NCBI and map
-./target/release/bit-pop run --ncbi "Escherichia coli" reads.fastq
-
-# With custom options
-./target/release/bit-pop run genome.fna -r reads.fastq \
-  -o output.sam \
-  -k 8 \
-  -q 20 \
-  -t 4
-```
-
-### Advanced Commands
-
-#### Build Index
-
-```bash
-./target/release/bit-pop build \
-  -f genome1.fasta -f genome2.fasta -f genome3.fasta \
-  -o index.bitpop \
-  -k 10 \
-  -t 4
-```
-
-#### Map Reads
-
-```bash
-# Single-end
-./target/release/bit-pop map \
-  -i index.bitpop \
-  -r reads.fastq \
-  -o output.sam \
-  -a xor \
-  -t 4
-
-# Paired-end
-./target/release/bit-pop map \
-  -i index.bitpop \
-  --reads-1 R1.fastq \
-  --reads-2 R2.fastq \
-  -o output.sam \
-  -a hybrid \
-  -t 4
-```
-
-#### Show Index Statistics
-
-```bash
-./target/release/bit-pop stats -i index.bitpop
-```
-
-#### Add Genomes to Existing Index
-
-```bash
-./target/release/bit-pop load \
-  -i existing.bitpop \
-  -f new_genome.fasta \
-  -o updated.bitpop
-```
-
-#### Search NCBI
-
-```bash
-./target/release/bit-pop search \
-  --organism "Escherichia coli" \
-  -n 10
-```
-
-#### Fetch Genome from NCBI
-
-```bash
-./target/release/bit-pop fetch \
-  --accession NC_000913.3 \
-  -o index.bitpop
-```
-
-#### Update Cached Genomes
-
-```bash
-./target/release/bit-pop update
-```
-
-#### EM Post-Processing
-
-Apply Expectation-Maximization algorithm to improve multi-candidate SAM mappings:
-
-```bash
-# Run EM on a SAM file produced by `bit-pop map`
-./target/release/bit-pop em \
-  -i mapped.sam \
-  -o em_mapped.sam \
-  --convergence 0.001 \
-  --max-iterations 20 \
-  --temperature 0.1 \
-  --top-k 30
-```
-
-**What it does**: When a read maps to multiple genomes with similar scores, EM uses population-level abundance signals to reassign reads to the most likely genome. Typically converges in 9-11 iterations (~0.13s on 18K reads).
-
-**Parameters**:
-- `--convergence`: KL divergence threshold for stopping (default: 0.001)
-- `--max-iterations`: Maximum EM iterations (default: 20)
-- `--temperature`: Softmax temperature for probability smoothing (default: 0.1)
-- `--top-k`: Number of top candidates per read (default: 30)
-
-### `run` Command Options
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `genome` | Genome file, folder, or NCBI organism | (required) |
-| `-r, --reads` | Reads file for single-end mode | (required) |
-| `-1, --reads-1` | R1 FASTQ for paired-end | (required with -2) |
-| `-2, --reads-2` | R2 FASTQ for paired-end | (required with -1) |
-| `--ncbi` | Fetch genome from NCBI | false |
-| `-o, --output` | Output SAM file | `<reads_name>.sam` |
-| `-k, --k` | K-mer size | 10 |
-| `--auto-k` | Auto-calculate optimal k-mer size | false |
-| `--read-type` | Read type: short (clamp [10,15]) / long (clamp [13,19]) | short |
-| `-s, --spaced-seed` | Enable spaced seed matching | false |
-| `-a, --align-mode` | Alignment mode: xor, sw, hybrid | hybrid |
-| `-m, --min-score` | Minimum alignment score (0.0-1.0) | 0.7 |
-| `-q, --min-quality` | Minimum Phred quality (0 = no filter) | 0 |
-| `-t, --threads` | Number of threads | 1 |
-| `--top-n` | Top N rarest k-mer anchors (higher = better mapping rate, slower) | 1 |
-| `--mmap` | Use memory-mapped FASTA loading | false |
-| `--force` | Force rebuild index | false |
-| `--method` | Fuzzy k-mer method: none, fuzzy-kmer, fuzzy-seed, neighborhood | none |
-| `--fuzzy-mismatches` | Max mismatches for fuzzy matching | 1 |
-
-### `build` Command — CAMI Dataset Support
-
-For CAMI benchmark datasets, use the `--cami` flag during index build to extract genome names from filenames instead of FASTA headers:
-
-```bash
-# CAMI dataset — genome names extracted from filenames
-bit-pop build --cami -f 1036554.gt1kb.fasta -o index.bitpop
-# → "1036554.gt1kb.fasta" → genome name: "1036554"
-
-# evo_* strains — .NNN suffix preserved
-# → "evo_1049056.011.fna" → genome name: "evo_1049056.011"
-```
-
-This fixes accuracy for CAMI datasets where FASTA headers don't match ground truth labels. Without `--cami`, accuracy can be as low as 1.07%; with it, accuracy reaches ~85.87% on the CAMI Low Complexity benchmark.
-
-### Align Modes
-
-- `xor`: Fast 2-bit XOR alignment only
-- `sw`: Smith-Waterman refinement for all reads
-- `hybrid`: XOR first, SW only when confidence < 0.9
-
-## Benchmark Results
-
-### Setup
-
-- **Genomes**: E. coli K-12 MG1655 (4.6 Mb), S. aureus (2.9 Mb), S. cerevisiae (12.2 Mb)
-- **Reads**: 20,000 simulated reads (100 bp, 0.1% error rate, Q30-Q40)
-- **k-mer size**: k=10
-- **Hardware**: Standard desktop CPU (Windows, PowerShell)
-
-### Results (k=10, top_n=1)
-
-| Genome | Size | Mapped | Mapping Rate | Accuracy |
-|--------|------|--------|--------------|----------|
-| E. coli | 4.6 Mb | 9,755/10,000 | 97.6% | 99.9% |
-| S. aureus | 2.9 Mb | 4,910/5,000 | 98.2% | 99.9% |
-| S. cerevisiae | 12.2 Mb | 4,905/5,000 | 98.1% | 100.0% |
-| **Total** | **19.7 Mb** | **19,570/20,000** | **97.9%** | **99.9%** |
-
-### Results (k=10, top_n=3)
-
-| Genome | Size | Mapped | Mapping Rate | Accuracy |
-|--------|------|--------|--------------|----------|
-| E. coli | 4.6 Mb | 9,924/10,000 | 99.2% | 99.9% |
-| S. aureus | 2.9 Mb | 4,968/5,000 | 99.4% | 99.9% |
-| S. cerevisiae | 12.2 Mb | 4,970/5,000 | 99.4% | 100.0% |
-| **Total** | **19.7 Mb** | **19,862/20,000** | **99.3%** | **99.9%** |
-
-**Performance trade-off**: top_n=3 is ~3x slower than top_n=1 (2.8s vs 0.9s for E. coli). Recommended: `--top-n 2` for balance between speed and accuracy.
-
-**Throughput**: ~1,500 reads/second (top_n=1)
-
-### CAMI Low Complexity Benchmark (62 Genomes)
-
-Benchmark on the CAMI I Low Complexity dataset — 20K reads across 62 microbial genomes including highly similar strains.
-
-**Setup**: 62 genomes (1880 sequences, ~1.4 GB index), 20K reads (2x150bp Illumina), k=10, top_n=2, 8 threads, `--cami` flag for genome naming
-
-| Metric | Value |
-|--------|-------|
-| Mapping rate | 92.02% (30,105/40,000 paired-end reads) |
-| Overall accuracy | 85.87% |
-| Time | ~60s per 10k reads |
-
-**Breakdown by genome type**:
-
-| Genome Type | Count | Accuracy |
-|-------------|-------|----------|
-| Numeric genomes (e.g. 1036554) | ~8,000 | 85.49% |
-| other | ~8,000 | 88.27% |
-| Sample* genomes (single-contig) | ~2,000 | 91.33% |
-| evo_* genomes (similar strains) | ~16,202 | 58.4% |
-
-**With EM post-processing** (Rust EM v2, temperature=0.1, top-k=30, confidence=0.95):
-
-| Metric | Baseline | + EM | Delta |
-|--------|----------|------|-------|
-| Overall accuracy | 85.87% | ~86.5% | +0.6pp |
-| evo_* accuracy | 58.4% | **59.8%** | **+1.4pp** |
-
-**EM limitation on near-identical strains**: Detailed analysis of evo_* reads shows EM improves classification by +1.4pp on near-identical strains (>99.9% ANI). EM fixes 805 wrong predictions but breaks 755 correct ones (net +50). This confirms the limitation is **fundamentally information-theoretic, not algorithmic** — abundance signal is insufficient to disambiguate sibling strains that share >99.9% of their k-mers. The `--confidence-threshold 0.95` parameter prevents EM from breaking high-confidence correct predictions.
-
-**Paired-end conflicts**: 35.5% of read pairs have R1 and R2 mapping to different genomes, reducing effective accuracy.
-
-**Why is overall accuracy lower than single-genome benchmarks?** The evo_* genomes are >99.9% identical strains from the same sample assembly. They share most k-mers with each other, causing reads to map to the wrong strain. This is a fundamental limitation of k-mer-based classification for near-identical genomes, not a bug. SNP-aware weighting or ML would be required for strain-level resolution.
-
-**See**: [docs/paper.pdf](docs/paper.pdf) for detailed analysis.
-
-## Project Structure
-
-```
-├── src/                    # Rust source code (15 modules)
-│   ├── main.rs             # CLI entry point (9 subcommands)
-│   ├── lib.rs              # Core library (BitPop struct, DNA encoding)
-│   ├── fm.rs               # FM-index (SA-IS, BWT, backward search)
-│   ├── align.rs            # Alignment (XOR, SW, Myers)
-│   ├── sam.rs              # SAM output format
-│   ├── em.rs               # EM post-processing algorithm
-│   ├── fasta.rs            # FASTA parsing + memory-mapped reader
-│   ├── fastq.rs            # FASTQ parsing + quality filtering
-│   ├── rank.rs             # Multi-genome ranking
-│   ├── ncbi.rs             # NCBI E-utilities API client
-│   ├── cache.rs            # Local cache management
-│   ├── index_manager.rs    # Dynamic index management
-│   ├── delta.rs            # Delta encoding + VLI compression
-│   ├── persisted.rs        # Advanced persistence (memmap2, format v5)
-│   └── serialize.rs        # Binary serialization
-├── benches/                # Criterion benchmarks (17 benchmark groups)
-├── tests/                  # Integration tests (5 tests)
-├── scripts/
-│   ├── simulate_reads.py   # Read simulation (Biopython)
-│   ├── analyze_benchmark_new.ps1 # Benchmark analysis
-│   ├── bitpop-workflow.py  # Multi-index workflow tool
-│   └── em_classifier.py    # Python EM prototype (reference implementation)
-├── data/
-│   ├── genomes/            # Reference genomes (.fna, .fasta)
-│   └── reads/              # Sequencing reads (.fastq)
-├── docs/
-│   ├── paper.tex           # Academic paper
-│   ├── paper.pdf           # Compiled paper
-│   ├── references.bib      # Bibliography
-│   └── CITATION.cff        # Citation metadata
-├── bioconda-recipe/        # Conda package recipe (future)
-├── Cargo.toml              # Rust project configuration
-└── README.md               # This file
-```
-
-### Data Files
-
-**Genomes:**
-- `data/genomes/Ecoli_K12_MG1655.fna` - E. coli K-12 MG1655 (4.6 Mb)
-- `data/genomes/CP029198.1.fasta` - Staphylococcus aureus (2.9 Mb)
-- `data/genomes/Sac_cerevisiae_complete.fasta` - S. cerevisiae S288C (12.2 Mb)
-
-**Simulated Reads:**
-- `data/reads/simulated_ecoli_10k_new.fastq` - 10,000 E. coli reads
-- `data/reads/simulated_aureus_5k_new.fastq` - 5,000 S. aureus reads
-- `data/reads/simulated_cerevisiae_5k_new.fastq` - 5,000 S. cerevisiae reads
-
-## Testing
-
-```bash
-# Run all tests (unit + integration)
-cargo test
-
-# Run only integration tests
-cargo test --test integration_tests
-
-# Run benchmarks
-cargo bench
-```
-
-**Test coverage:**
-- 263+ unit tests (alignment, indexing, serialization, SAM output, spaced seeds, delta encoding, persistence, EM algorithm)
-- 5 integration tests (build, map, multi-genome, SAM format, cache reuse)
-- 17 Criterion benchmark groups (XOR, SW, Myers, FM-index, k-mer filter, full pipeline)
-
-## Limitations
-
-- Research tool; not validated on large-scale real datasets or clinical use
-- No clinical validation; academic research tool only
-- Index file sizes ~152MB for 19.7Mb genome (delta compression planned)
-- Chunked reads (>31bp) use generic CIGAR without per-base mismatch detail
-- **Strain-level resolution**: Genomes that are >99.9% identical (same sample, different strains) share most k-mers. Reads may map to the wrong strain or to a parent genome. This is a fundamental limitation of k-mer rarity-based classification, not a bug. Requires SNP-aware weighting or ML for resolution.
-
-## Large Genome Support
-
-**Limitation:** FM-index construction uses libsais which has a ~2GB limit per index (~2.1B characters).
-
-**Solution for large genomes (>2GB):** Use the workflow tool to automatically split, build, map, and merge:
-
-```bash
-# Full workflow (all steps automatic)
-python scripts/bitpop-workflow.py full genome.fna reads.fastq -o output/ --threads 8
-
-# Or manual step-by-step:
-python scripts/bitpop-workflow.py split genome.fna -o chunks/
-python scripts/bitpop-workflow.py build chunks/ -o indexes/ --threads 8
-python scripts/bitpop-workflow.py map indexes/ reads.fastq -o mapped/ --threads 8
-python scripts/bitpop-workflow.py merge mapped/ -o final.sam
-```
-
-**How it works:**
-1. Splits genome into chunks (< 2GB each) by accession/chromosome boundaries
-2. Builds FM-index for each chunk in parallel
-3. Maps reads against all indexes in parallel
-4. Merges SAM results (deduplicates by read name)
-
-**Options:**
-- `--max-size 2000` - max chunk size in MB (default: 2000)
-- `--threads 8` - parallel threads (default: 4)
-- `--no-cleanup` - keep intermediate files
+Adapts the bit-pop FM-index + multi-reference classifier for peptide-to-protein mapping.
+The FM-index in `fm.rs` is **unchanged** — it operates on `&[u8]`, so encoding amino acids
+as bytes (0–20) makes it alphabet-agnostic. The XOR/SW/Myers alignment pipeline collapses
+to a single exact FM backward search per peptide (O(m), m = peptide length).
 
 ---
 
-## Development Roadmap
+## Files to ADD
 
-### ✅ Completed
-- **Phase 0**: Critical bug fixes (rarity calculation, TLEN, BWT serialization, panic fixes)
-- **Phase 1.1**: Top-N rarest k-mer anchors (97.9% → 99.3% mapping rate)
-- **Phase 1.2**: Reverse complement support with SAM FLAG 0x10
-- **Phase 1.3**: Paired-end support with full SAM compliance
-- **Phase 1.1 (extended)**: Spaced seeds for high-error reads
-- **Phase 1.2 (extended)**: Adaptive k-mer size (`--auto-k`, `--read-type`)
-- **Phase 1.4**: Myers edit distance (23-54x faster than Smith-Waterman)
-- **Phase 2.1**: Memory-mapped FASTA (`--mmap`)
-- **Phase 2.2**: Parallel index build (rayon)
-- **Phase 3.1**: Progress reporting (CLI progress bars)
-- **Phase 6**: NCBI E-utilities integration (search, fetch, update commands)
-- **Phase 7**: Large genome workaround (`bitpop-workflow.py`)
-- **UX**: `run` command with auto-index caching and smart defaults
-- **Tests**: Integration test suite (5 tests)
-- **Phase 4**: CAMI Low Complexity benchmark (62 genomes, 20K reads, 92.02% mapping rate, 85.87% accuracy)
+### `src/aa.rs` — Amino acid alphabet (replaces 2-bit DNA encoding in lib.rs)
 
-### 🔧 In Progress
-- **EM refinement**: Multi-k consensus (k=8 + k=10 + k=12) for improved strain resolution
+```rust
+/// Encode a single amino acid character to a byte value 1–20.
+/// Unknown/ambiguous residues are mapped to nearest canonical AA.
+/// Separator '$' maps to 0.
+pub fn encode_aa(c: u8) -> u8 {
+    match c.to_ascii_uppercase() {
+        b'A' => 1,  b'C' => 2,  b'D' => 3,  b'E' => 4,
+        b'F' => 5,  b'G' => 6,  b'H' => 7,  b'I' => 8,
+        b'K' => 9,  b'L' => 10, b'M' => 11, b'N' => 12,
+        b'P' => 13, b'Q' => 14, b'R' => 15, b'S' => 16,
+        b'T' => 17, b'V' => 18, b'W' => 19, b'Y' => 20,
+        b'U' => 11, // selenocysteine → Met (common in UniProt)
+        b'B' => 12, // Asx ambiguity → Asn
+        b'Z' => 14, // Glx ambiguity → Gln
+        b'X' => 1,  // unknown → Ala
+        b'$' => 0,  // separator
+        _    => 0,
+    }
+}
 
-### 📋 Planned
-- **Phase 2**: SA compression, streaming input, SIMD acceleration (AVX2)
-- **Phase 3**: CIGAR accuracy improvements, quality filter enhancements
-- **Phase 5**: Read caching, enhanced statistics, API documentation (docs.rs)
-- **Multi-index**: Unified FM-index with automatic splitting (>2GB genomes)
-- **Strain resolution**: Multi-k consensus, long-read support (PacBio/ONT), known SNP (VCF) integration
+pub fn decode_aa(v: u8) -> char {
+    match v {
+        1  => 'A', 2  => 'C', 3  => 'D', 4  => 'E',
+        5  => 'F', 6  => 'G', 7  => 'H', 8  => 'I',
+        9  => 'K', 10 => 'L', 11 => 'M', 12 => 'N',
+        13 => 'P', 14 => 'Q', 15 => 'R', 16 => 'S',
+        17 => 'T', 18 => 'V', 19 => 'W', 20 => 'Y',
+        _  => '$',
+    }
+}
 
-### 📊 Expand Benchmarks
-- 100+ genomes and eukaryotic genomes
-- Direct comparison with Bowtie2, BWA-MEM on multi-genome tasks
-- CAMI Low Complexity: completed (62 genomes, 20K reads, 85.87% accuracy)
+/// Encode a full protein/peptide string to a Vec<u8> of AA indices.
+pub fn encode_sequence(seq: &str) -> Vec<u8> {
+    seq.bytes().map(encode_aa).collect()
+}
 
-## Getting Help
+/// Validate that a string looks like a peptide (all standard AA chars).
+pub fn is_valid_peptide(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() >= 5       // discard fragments shorter than 5 aa
+        && s.bytes().all(|c| {
+            matches!(c.to_ascii_uppercase(),
+                b'A'..=b'Z') // broad check; encode_aa handles ambiguous ones
+        })
+}
+```
 
-- **Documentation**: This README and [docs/paper.pdf](docs/paper.pdf)
-- **Issues**: [GitHub Issues](https://github.com/mladenpop-oss/bit-pop/issues) — bug reports and feature requests
-- **Discussions**: [GitHub Discussions](https://github.com/mladenpop-oss/bit-pop/discussions) — questions and feature ideas
-- **Citation**: See [CITATION.cff](docs/CITATION.cff) or the DOI below
+---
 
-## Paper
+### `src/peptide.rs` — Peptide file parser
 
-[Read the full paper (PDF)](docs/paper.pdf)
+```rust
+use std::fs;
+use crate::aa::is_valid_peptide;
+
+/// Parse a peptide input file.
+/// Accepts:
+///   - One peptide per line
+///   - Multiple peptides on a line separated by whitespace
+///   - Lines starting with '#' are comments
+///   - Empty lines are skipped
+///
+/// Returns a deduplicated, uppercased Vec of valid peptide strings.
+pub fn parse_peptide_file(path: &str) -> anyhow::Result<Vec<String>> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("Cannot read peptide file {}: {}", path, e))?;
+
+    let mut peptides: Vec<String> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .flat_map(|line| line.split_whitespace())
+        .map(|p| p.to_ascii_uppercase())
+        .filter(|p| is_valid_peptide(p))
+        .collect();
+
+    // Deduplicate while preserving order
+    let mut seen = std::collections::HashSet::new();
+    peptides.retain(|p| seen.insert(p.clone()));
+
+    eprintln!("[peptide] Loaded {} unique peptides from {}", peptides.len(), path);
+    Ok(peptides)
+}
+```
+
+---
+
+### `src/uniprot.rs` — UniProt proteome downloader (replaces ncbi.rs)
+
+```rust
+use std::fs;
+use std::path::Path;
+use anyhow::Result;
+
+const UNIPROT_REST: &str = "https://rest.uniprot.org/uniprotkb/search";
+
+/// Download a UniProt reference proteome as FASTA.
+///
+/// `proteome_id` — UniProt proteome ID, e.g. "UP000005640" (human)
+///               — or a taxon name, e.g. "Homo sapiens"
+/// `out_path`    — local path to write the FASTA file
+///
+/// Uses UniProt REST API with cursor-based pagination (500 entries/page).
+pub fn download_proteome(proteome_id: &str, out_path: &str) -> Result<()> {
+    // Detect whether we got a proteome ID (UP*) or an organism name
+    let query = if proteome_id.starts_with("UP") {
+        format!("proteome:{}", proteome_id)
+    } else {
+        format!("proteome:* AND organism_name:{}", proteome_id)
+    };
+
+    eprintln!("[uniprot] Downloading proteome: {} → {}", proteome_id, out_path);
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("pepmap/0.1 (proteomics-tool; contact via GitHub)")
+        .build()?;
+
+    let mut all_fasta = String::new();
+    let mut cursor: Option<String> = None;
+    let mut page = 0usize;
+
+    loop {
+        page += 1;
+        let mut req = client.get(UNIPROT_REST)
+            .query(&[
+                ("query",  query.as_str()),
+                ("format", "fasta"),
+                ("size",   "500"),
+            ]);
+
+        if let Some(ref c) = cursor {
+            req = req.query(&[("cursor", c.as_str())]);
+        }
+
+        let resp = req.send()?;
+
+        // Extract next cursor from Link header (UniProt pagination)
+        cursor = resp.headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| parse_next_cursor(s));
+
+        let body = resp.text()?;
+        if body.trim().is_empty() { break; }
+
+        all_fasta.push_str(&body);
+        eprintln!("[uniprot] Page {} fetched ({} chars total)", page, all_fasta.len());
+
+        if cursor.is_none() { break; }
+    }
+
+    fs::write(out_path, &all_fasta)?;
+    eprintln!("[uniprot] Written {} bytes to {}", all_fasta.len(), out_path);
+    Ok(())
+}
+
+/// Parse 'cursor=XYZ' from a Link: <url?cursor=XYZ>; rel="next" header.
+fn parse_next_cursor(link_header: &str) -> Option<String> {
+    if !link_header.contains("rel=\"next\"") { return None; }
+    link_header.split(',')
+        .find(|part| part.contains("rel=\"next\""))
+        .and_then(|part| {
+            let url = part.split('<').nth(1)?.split('>').next()?;
+            url.split('&')
+               .chain(url.split('?'))
+               .find(|seg| seg.starts_with("cursor="))
+               .map(|seg| seg["cursor=".len()..].to_owned())
+        })
+}
+
+/// List available reference proteomes for an organism name.
+pub fn search_proteomes(organism: &str) -> Result<Vec<(String, String)>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("pepmap/0.1")
+        .build()?;
+
+    let resp = client.get("https://rest.uniprot.org/proteomes/search")
+        .query(&[
+            ("query",  organism),
+            ("format", "tsv"),
+            ("fields", "upid,organism,protein_count,busco"),
+            ("size",   "10"),
+        ])
+        .send()?
+        .text()?;
+
+    let results: Vec<(String, String)> = resp.lines()
+        .skip(1)  // header row
+        .filter_map(|line| {
+            let mut cols = line.splitn(2, '\t');
+            let upid = cols.next()?.to_owned();
+            let org  = cols.next()?.to_owned();
+            Some((upid, org))
+        })
+        .collect();
+
+    Ok(results)
+}
+```
+
+---
+
+### `src/proteome.rs` — Protein FASTA loader with UniProt header parsing
+
+```rust
+use std::fs;
+use crate::aa::encode_sequence;
+
+/// A single protein entry from a UniProt FASTA.
+#[derive(Debug, Clone)]
+pub struct ProteinEntry {
+    pub accession:  String,   // e.g. "P12345"
+    pub entry_name: String,   // e.g. "GENE_HUMAN"
+    pub gene:       String,   // e.g. "GENE"
+    pub organism:   String,   // e.g. "Homo sapiens"
+    pub description: String,  // full description string
+    pub sequence:   String,   // raw AA sequence (uppercase)
+    pub offset:     usize,    // byte offset in concatenated index text
+}
+
+/// Parsed proteome: all proteins + the concatenated encoded sequence
+/// ready for FM-index construction.
+pub struct Proteome {
+    pub name:       String,
+    pub proteins:   Vec<ProteinEntry>,
+    /// Concatenated encoded sequence: proteins joined by '$' (0).
+    /// This is the text handed to the FM-index builder.
+    pub text:       Vec<u8>,
+}
+
+impl Proteome {
+    pub fn from_fasta(path: &str, proteome_name: &str) -> anyhow::Result<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read FASTA {}: {}", path, e))?;
+
+        let mut proteins: Vec<ProteinEntry> = Vec::new();
+        let mut text: Vec<u8> = Vec::new();
+        let mut current_header: Option<String> = None;
+        let mut current_seq: String = String::new();
+
+        for line in content.lines() {
+            if line.starts_with('>') {
+                if let Some(hdr) = current_header.take() {
+                    let offset = text.len();
+                    let entry = parse_uniprot_header(&hdr, &current_seq, offset);
+                    let encoded = encode_sequence(&current_seq);
+                    text.extend_from_slice(&encoded);
+                    text.push(0u8); // '$' separator
+                    proteins.push(entry);
+                    current_seq.clear();
+                }
+                current_header = Some(line[1..].to_owned());
+            } else {
+                current_seq.push_str(line.trim());
+            }
+        }
+        // Flush last entry
+        if let Some(hdr) = current_header {
+            let offset = text.len();
+            let entry = parse_uniprot_header(&hdr, &current_seq, offset);
+            let encoded = encode_sequence(&current_seq);
+            text.extend_from_slice(&encoded);
+            text.push(0u8);
+            proteins.push(entry);
+        }
+
+        eprintln!("[proteome] {} — {} proteins, {} encoded chars",
+            proteome_name, proteins.len(), text.len());
+
+        Ok(Proteome {
+            name: proteome_name.to_owned(),
+            proteins,
+            text,
+        })
+    }
+
+    /// Given a position in the concatenated text, find which protein it belongs to
+    /// and the offset within that protein.
+    pub fn locate(&self, pos: usize) -> Option<(&ProteinEntry, usize)> {
+        // Binary search: find the protein whose offset <= pos < offset+len+1
+        let idx = self.proteins.partition_point(|p| p.offset <= pos);
+        if idx == 0 { return None; }
+        let protein = &self.proteins[idx - 1];
+        let local_pos = pos - protein.offset;
+        if local_pos < protein.sequence.len() {
+            Some((protein, local_pos))
+        } else {
+            None // hit the separator
+        }
+    }
+}
+
+/// Parse a UniProt FASTA header line (without the leading '>').
+///
+/// Formats handled:
+///   sp|P12345|GENE_HUMAN Description OS=Homo sapiens OX=9606 GN=GENE PE=1 SV=1
+///   tr|A0A000|GENE_HUMAN ...
+///   Any non-UniProt FASTA (e.g. contaminant db): accession = first token
+fn parse_uniprot_header(header: &str, seq: &str, offset: usize) -> ProteinEntry {
+    let mut accession  = String::new();
+    let mut entry_name = String::new();
+    let mut gene       = String::new();
+    let mut organism   = String::new();
+    let mut description = header.to_owned();
+
+    // Try UniProt pipe format
+    let parts: Vec<&str> = header.splitn(3, '|').collect();
+    if parts.len() == 3 && (parts[0] == "sp" || parts[0] == "tr") {
+        accession  = parts[1].to_owned();
+        // third field: "GENE_HUMAN Description OS=..."
+        let rest = parts[2];
+        let space_pos = rest.find(' ').unwrap_or(rest.len());
+        entry_name = rest[..space_pos].to_owned();
+        description = rest[space_pos..].trim().to_owned();
+
+        // Extract OS= field
+        if let Some(os_start) = description.find("OS=") {
+            let os_end = description[os_start..]
+                .find(" OX=").map(|i| os_start + i)
+                .unwrap_or(description.len());
+            organism = description[os_start + 3..os_end].to_owned();
+        }
+
+        // Extract GN= field
+        if let Some(gn_start) = description.find("GN=") {
+            let gn_end = description[gn_start..]
+                .find(' ').map(|i| gn_start + i)
+                .unwrap_or(description.len());
+            gene = description[gn_start + 3..gn_end].to_owned();
+        }
+    } else {
+        // Generic FASTA: first whitespace-delimited token is the accession
+        accession = header.split_whitespace().next().unwrap_or("unknown").to_owned();
+    }
+
+    ProteinEntry {
+        accession,
+        entry_name,
+        gene,
+        organism,
+        description,
+        sequence: seq.to_ascii_uppercase(),
+        offset,
+    }
+}
+```
+
+---
+
+### `src/search.rs` — Peptide FM-index search (exact + fuzzy)
+
+```rust
+use crate::aa::encode_sequence;
+use crate::proteome::Proteome;
+// Reuse the existing FmIndex from fm.rs
+use crate::fm::FmIndex;
+
+#[derive(Debug)]
+pub struct PeptideHit {
+    pub peptide:    String,
+    pub accession:  String,
+    pub entry_name: String,
+    pub gene:       String,
+    pub organism:   String,
+    pub proteome:   String,
+    pub position:   usize,   // 0-based position in protein
+    pub match_type: MatchType,
+}
+
+#[derive(Debug)]
+pub enum MatchType {
+    Exact,
+    OneMismatch, // future: fuzzy
+}
+
+/// Search all peptides against all loaded proteomes.
+/// Returns one row per (peptide, hit).
+pub fn search_all(
+    peptides: &[String],
+    proteomes: &[(Proteome, FmIndex)],
+    max_mismatches: u8,
+) -> Vec<PeptideHit> {
+    use rayon::prelude::*;   // reuse existing rayon dependency
+
+    peptides.par_iter().flat_map(|pep| {
+        let encoded = encode_sequence(pep);
+        let mut hits: Vec<PeptideHit> = Vec::new();
+
+        for (proteome, fm) in proteomes {
+            // FM backward search returns a range [lo, hi) of suffix array positions
+            if let Some((lo, hi)) = fm.backward_search(&encoded) {
+                for sa_pos in lo..hi {
+                    let text_pos = fm.sa[sa_pos] as usize;
+                    if let Some((protein, local_pos)) = proteome.locate(text_pos) {
+                        hits.push(PeptideHit {
+                            peptide:    pep.clone(),
+                            accession:  protein.accession.clone(),
+                            entry_name: protein.entry_name.clone(),
+                            gene:       protein.gene.clone(),
+                            organism:   protein.organism.clone(),
+                            proteome:   proteome.name.clone(),
+                            position:   local_pos,
+                            match_type: MatchType::Exact,
+                        });
+                    }
+                }
+            }
+        }
+        hits
+    }).collect()
+}
+
+/// Write results as TSV to stdout or a file.
+pub fn write_tsv(hits: &[PeptideHit], out_path: Option<&str>) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let header = "peptide\taccession\tentry\tgene\torganism\tproteome\tposition\tmatch_type\n";
+    let mut out: Box<dyn Write> = match out_path {
+        Some(p) => Box::new(std::fs::File::create(p)?),
+        None    => Box::new(std::io::stdout()),
+    };
+
+    out.write_all(header.as_bytes())?;
+    for h in hits {
+        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
+            h.peptide, h.accession, h.entry_name, h.gene,
+            h.organism, h.proteome, h.position, h.match_type)?;
+    }
+    Ok(())
+}
+```
+
+---
+
+## Files to MODIFY
+
+### `Cargo.toml` — add dependencies
+
+```toml
+[dependencies]
+# existing deps unchanged...
+anyhow   = "1"
+reqwest  = { version = "0.11", features = ["blocking"] }
+# rayon already present
+```
+
+---
+
+### `src/main.rs` — add `peptide-search` subcommand
+
+Add this arm to the existing `match` on subcommands. All existing subcommands are **unchanged**.
+
+```rust
+// NEW subcommand: pepmap
+("peptide-search", Some(sub)) => {
+    let peptide_file = sub.value_of("peptides").unwrap();
+    let fasta_paths: Vec<&str> = sub.values_of("proteome")
+                                    .unwrap().collect();
+    let out_path = sub.value_of("output");
+    let threads  = sub.value_of("threads")
+                      .and_then(|t| t.parse().ok())
+                      .unwrap_or(4usize);
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()?;
+
+    // Optionally download from UniProt
+    if let Some(upid) = sub.value_of("uniprot") {
+        let local = format!("{}.fasta", upid);
+        uniprot::download_proteome(upid, &local)?;
+        // fasta_paths would then point to `local`
+    }
+
+    // Load all proteomes and build FM-indexes
+    let proteomes: Vec<(proteome::Proteome, fm::FmIndex)> = fasta_paths
+        .iter()
+        .map(|path| {
+            let name = std::path::Path::new(path)
+                .file_stem().unwrap().to_string_lossy().to_string();
+            let prot = proteome::Proteome::from_fasta(path, &name)
+                .expect("Failed to load proteome");
+            let fm = fm::FmIndex::build(&prot.text); // existing build fn, unchanged
+            (prot, fm)
+        })
+        .collect();
+
+    // Parse peptides
+    let peptides = peptide::parse_peptide_file(peptide_file)?;
+
+    // Search
+    let hits = search::search_all(&peptides, &proteomes, 0);
+    eprintln!("[pepmap] {} hits across {} peptides", hits.len(), peptides.len());
+
+    search::write_tsv(&hits, out_path)?;
+}
+```
+
+Add the subcommand definition in the clap `App`:
+
+```rust
+.subcommand(
+    App::new("peptide-search")
+        .about("Map peptides to one or more UniProt proteomes")
+        .arg(Arg::new("peptides")
+            .short('p').long("peptides")
+            .value_name("FILE")
+            .help("Peptide list: one per line, or space-separated per line")
+            .required(true))
+        .arg(Arg::new("proteome")
+            .short('f').long("proteome")
+            .value_name("FASTA")
+            .help("Proteome FASTA file(s) (UniProt format)")
+            .multiple_occurrences(true)
+            .required_unless_present("uniprot"))
+        .arg(Arg::new("uniprot")
+            .long("uniprot")
+            .value_name("PROTEOME_ID")
+            .help("UniProt proteome ID to download, e.g. UP000005640"))
+        .arg(Arg::new("output")
+            .short('o').long("output")
+            .value_name("TSV")
+            .help("Output TSV file (default: stdout)"))
+        .arg(Arg::new("threads")
+            .short('t').long("threads")
+            .default_value("4"))
+)
+```
+
+---
+
+## What does NOT change
+
+| File | Status | Reason |
+|---|---|---|
+| `src/fm.rs` | **Unchanged** | Operates on `&[u8]` — alphabet-agnostic |
+| `src/em.rs` | **Unchanged** | EM on abundance vectors — still valid for multi-proteome |
+| `src/align.rs` | **Unused** for exact matching; still available for fuzzy | |
+| `src/sam.rs` | **Unused** for peptide output | New TSV output in `search.rs` |
+| `src/ncbi.rs` | **Unchanged** | DNA classification workflow unaffected |
+| `src/fasta.rs` | **Unchanged** | DNA FASTA still needed for `run/build/map` cmds |
+| All benchmarks, tests | **Unchanged** | Existing test suite unaffected |
+
+---
+
+## Usage
+
+```bash
+# Build
+cargo build --release
+
+# Download human proteome and search
+./target/release/bit-pop peptide-search \
+  --uniprot UP000005640 \
+  -p my_peptides.txt \
+  -o hits.tsv \
+  -t 8
+
+# Search against pre-downloaded FASTAs (human + mouse + contaminants)
+./target/release/bit-pop peptide-search \
+  -f human.fasta \
+  -f mouse.fasta \
+  -f contaminants.fasta \
+  -p my_peptides.txt \
+  -o hits.tsv \
+  -t 8
+```
+
+### Peptide file formats accepted
+
+```
+# Format 1: one per line
+PEPTIDER
+ACDEFGHIKLM
+SAMPLEPEPTIDE
+
+# Format 2: space-separated
+PEPTIDER ACDEFGHIKLM
+SAMPLEPEPTIDE ANOTHERSEQ
+
+# Format 3: mixed, with comments
+# MaxQuant output peptides
+PEPTIDER ACDEFGHIKLM
+# tryptic fragments
+SAMPLEPEPTIDE
+```
+
+### Output TSV columns
+
+| Column | Example |
+|---|---|
+| peptide | PEPTIDER |
+| accession | P12345 |
+| entry | GENE_HUMAN |
+| gene | GENE |
+| organism | Homo sapiens |
+| proteome | human |
+| position | 42 |
+| match_type | Exact |
+
+---
+
+## Key design decisions
+
+1. **FM-index reused as-is** — encoding 20 AA as bytes 1–20 fits inside `u8`; libsais SA construction is byte-array agnostic.
+2. **No alignment step for exact search** — peptides (from MaxQuant etc.) are exact sequences; FM backward search is sufficient and O(m).
+3. **`align.rs` kept available** for future fuzzy matching (e.g. I/L equivalence, deamidation N→D).
+4. **EM post-processing** still applies if a peptide maps to multiple proteomes with ambiguity.
+5. **Reverse complement logic deleted** only from the new peptide path — DNA workflow is untouched.
+
 
 ## Availability
 
