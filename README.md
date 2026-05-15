@@ -2,6 +2,13 @@
 
 Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s)
 
+```bash
+bash setup.sh
+pip install requests
+python make_test_peptides.py                         # SARS-CoV-2 default
+python make_test_peptides.py --proteome UP000005640  # Human (takes ~30s to download)
+```
+
 ## Plan @claude-code
 
 # bit-pop → pepmap: Peptide Search Across Proteomes

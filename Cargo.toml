@@ -7,6 +7,8 @@ license = "MIT"
 authors = ["Mladen Popovic <mladenpop@gmail.com>"]
 
 [dependencies]
+anyhow      = "1"
+urlencoding  = "2.1"
 rayon = "1.10"
 clap = { version = "4", features = ["derive"] }
 memmap2 = "0.9"

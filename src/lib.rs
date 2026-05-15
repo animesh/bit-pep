@@ -102,6 +102,10 @@ pub mod persisted;
 pub mod rank;
 pub mod sam;
 pub mod serialize;
+pub mod amino;
+pub mod peptide_input;
+pub mod uniprot;
+pub mod pep_output;
 
 use std::fmt;
 

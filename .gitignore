@@ -1,3 +1,8 @@
+# generated files for testing and benchmarking
+*.txt
+*.fasta
+
+
 # Build artifacts
 target/
 **/*.pdb

@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader};
 pub const MIN_PEPTIDE_LEN: usize = 6;
 pub const MAX_PEPTIDE_LEN: usize = 50; // soft guard; longer sequences accepted but warned
 
-const VALID_AA: &[u8] = b"ACDEFGHIKLMNPQRSTVWYBXZUO*";
+const VALID_AA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ*";
 
 #[derive(Debug, Clone)]
 pub struct Peptide {
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn parse_space_separated() {
-        let input = "ACDEFG HIJKLM NPQRST";
+        let input = "ACDEFG HIKLMN NPQRST";
         let peps = parse_peptide_str(input).unwrap();
         assert_eq!(peps.len(), 3);
     }

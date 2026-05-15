@@ -1,59 +1,80 @@
 /// amino.rs — 5-bit amino acid encoding for FM-index
 ///
-/// Replaces the 2-bit DNA encoding in lib.rs.
-/// Standard 20 AAs → codes 1–20 (0 reserved for sentinel '$').
-/// Unknown / ambiguous residues (B, X, Z, U, O) → code 21.
-/// Code 0 is the BWT sentinel; libsais requires it to be the lexicographically
-/// smallest character, so all AA codes must be ≥ 1.
+/// Supports ALL 26 IUPAC single-letter amino acid codes (A–Z).
+/// https://en.wikipedia.org/wiki/Amino_acid
 ///
-/// ALPHA_SIZE = 22 (sentinel + 20 AAs + unknown bucket).
+/// Code assignment:
+///   0        → BWT sentinel '$' (reserved; never appears in input)
+///   1–20     → Standard 20 proteinogenic AAs
+///   21       → U  Selenocysteine  (21st proteinogenic AA)
+///   22       → O  Pyrrolysine     (22nd proteinogenic AA)
+///   23       → B  Asx  (Asp or Asn — ambiguous)
+///   24       → J  Xle  (Leu or Ile — common in MS/MS proteomics; LC-MS can't distinguish)
+///   25       → Z  Glx  (Glu or Gln — ambiguous)
+///   26       → X  Xaa  (any / unknown)
+///
+/// 5 bits per residue (range 0–31) → pack 6 residues per u32.
+/// ALPHA_SIZE = 27  (codes 0–26).
 
-pub const ALPHA_SIZE: usize = 22;
+pub const ALPHA_SIZE: usize = 27;
 
-/// Ordered standard amino-acid alphabet (matches code 1–20).
+/// Ordered standard amino-acid alphabet (matches codes 1–20).
 pub const AA_ORDER: &[u8; 20] = b"ACDEFGHIKLMNPQRSTVWY";
 
-/// Encode a single residue to its 5-bit code.
-/// Returns 0 only for the BWT sentinel '$'; never returned for normal input.
+/// Encode a single IUPAC residue to its 5-bit code.
+/// Code 0 is never returned for normal input (reserved for BWT sentinel).
 #[inline]
 pub fn encode_aa(c: u8) -> u8 {
     match c.to_ascii_uppercase() {
-        b'A' =>  1,
-        b'C' =>  2,
-        b'D' =>  3,
-        b'E' =>  4,
-        b'F' =>  5,
-        b'G' =>  6,
-        b'H' =>  7,
-        b'I' =>  8,
-        b'K' =>  9,
-        b'L' => 10,
-        b'M' => 11,
-        b'N' => 12,
-        b'P' => 13,
-        b'Q' => 14,
-        b'R' => 15,
-        b'S' => 16,
-        b'T' => 17,
-        b'V' => 18,
-        b'W' => 19,
-        b'Y' => 20,
-        // Ambiguous / non-standard: B(D|N), Z(E|Q), X(any), U(Sec), O(Pyl)
-        _ =>    21,
+        // Standard 20
+        b'A' =>  1,  // Alanine
+        b'C' =>  2,  // Cysteine
+        b'D' =>  3,  // Aspartic acid
+        b'E' =>  4,  // Glutamic acid
+        b'F' =>  5,  // Phenylalanine
+        b'G' =>  6,  // Glycine
+        b'H' =>  7,  // Histidine
+        b'I' =>  8,  // Isoleucine
+        b'K' =>  9,  // Lysine
+        b'L' => 10,  // Leucine
+        b'M' => 11,  // Methionine
+        b'N' => 12,  // Asparagine
+        b'P' => 13,  // Proline
+        b'Q' => 14,  // Glutamine
+        b'R' => 15,  // Arginine
+        b'S' => 16,  // Serine
+        b'T' => 17,  // Threonine
+        b'V' => 18,  // Valine
+        b'W' => 19,  // Tryptophan
+        b'Y' => 20,  // Tyrosine
+        // Special proteinogenic
+        b'U' => 21,  // Selenocysteine (Sec)
+        b'O' => 22,  // Pyrrolysine    (Pyl)
+        // IUPAC ambiguity codes
+        b'B' => 23,  // Asx  = Asp or Asn
+        b'J' => 24,  // Xle  = Leu or Ile  (important for MS/MS)
+        b'Z' => 25,  // Glx  = Glu or Gln
+        b'X' => 26,  // Xaa  = any amino acid
+        _    => 26,  // treat anything else as X
     }
 }
 
-/// Decode a code back to single-letter AA (for display).
+/// Decode a code back to its single-letter IUPAC symbol.
 #[inline]
 pub fn decode_aa(code: u8) -> u8 {
     match code {
         1..=20 => AA_ORDER[(code - 1) as usize],
-        _ => b'X',
+        21 => b'U',
+        22 => b'O',
+        23 => b'B',
+        24 => b'J',
+        25 => b'Z',
+        _  => b'X',
     }
 }
 
 /// Encode an entire peptide/protein sequence into a Vec<u8> of AA codes.
-/// Stops at '*' (stop codon) if present — treats it as end of sequence.
+/// Stops at '*' (stop codon) if present.
 pub fn encode_sequence(seq: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(seq.len());
     for &c in seq {
@@ -65,7 +86,6 @@ pub fn encode_sequence(seq: &[u8]) -> Vec<u8> {
 
 /// Pack 6 encoded AAs into one u32 (5 bits × 6 = 30 bits; 2 bits unused).
 /// Used for XOR-based approximate matching in align.rs.
-/// `encoded` must already be encode_sequence() output.
 #[inline]
 pub fn pack_u32(encoded: &[u8]) -> u32 {
     debug_assert!(encoded.len() <= 6);
@@ -77,7 +97,6 @@ pub fn pack_u32(encoded: &[u8]) -> u32 {
 }
 
 /// Count mismatching AA positions in two packed u32 words.
-/// Each 5-bit field is non-zero iff the residues differ.
 #[inline]
 pub fn count_mismatches_u32(a: u32, b: u32) -> u32 {
     const MASK5: u32 = 0b11111;
@@ -96,7 +115,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_decode_roundtrip() {
+    fn encode_decode_roundtrip_standard_20() {
         for &aa in AA_ORDER.iter() {
             let code = encode_aa(aa);
             assert!(code >= 1 && code <= 20, "code out of range for {}", aa as char);
@@ -105,10 +124,29 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_residues_get_code_21() {
-        assert_eq!(encode_aa(b'X'), 21);
-        assert_eq!(encode_aa(b'B'), 21);
-        assert_eq!(encode_aa(b'Z'), 21);
+    fn all_26_iupac_codes_are_nonzero() {
+        for c in b'A'..=b'Z' {
+            let code = encode_aa(c);
+            assert!(code >= 1, "code 0 (sentinel) leaked for '{}'", c as char);
+            assert!(code <= 26, "code > 26 for '{}'", c as char);
+        }
+    }
+
+    #[test]
+    fn j_encodes_as_xle() {
+        let code = encode_aa(b'J');
+        assert_eq!(code, 24, "J (Xle) should be code 24");
+        assert_eq!(decode_aa(24), b'J');
+    }
+
+    #[test]
+    fn special_codes_roundtrip() {
+        assert_eq!(encode_aa(b'U'), 21); assert_eq!(decode_aa(21), b'U');
+        assert_eq!(encode_aa(b'O'), 22); assert_eq!(decode_aa(22), b'O');
+        assert_eq!(encode_aa(b'B'), 23); assert_eq!(decode_aa(23), b'B');
+        assert_eq!(encode_aa(b'J'), 24); assert_eq!(decode_aa(24), b'J');
+        assert_eq!(encode_aa(b'Z'), 25); assert_eq!(decode_aa(25), b'Z');
+        assert_eq!(encode_aa(b'X'), 26); assert_eq!(decode_aa(26), b'X');
     }
 
     #[test]
@@ -121,8 +159,8 @@ mod tests {
 
     #[test]
     fn pack_xor_counts_one_mismatch() {
-        let a: Vec<u8> = b"ACDEFG".iter().map(|&c| encode_aa(c)).collect();
-        let b_seq: Vec<u8> = b"ACDEFH".iter().map(|&c| encode_aa(c)).collect(); // last AA differs
+        let a: Vec<u8>   = b"ACDEFG".iter().map(|&c| encode_aa(c)).collect();
+        let b_seq: Vec<u8> = b"ACDEFH".iter().map(|&c| encode_aa(c)).collect();
         assert_eq!(count_mismatches_u32(pack_u32(&a), pack_u32(&b_seq)), 1);
     }
 }
