@@ -154,6 +154,14 @@ pub fn encode_sequence(seq: &str) -> Vec<u8> {
 }
 
 /// Decode a compact byte slice back to a DNA string.
+/// Encode amino-acid sequence to byte codes 1-26 (IUPAC single-letter).
+pub fn encode_sequence_aa(seq: &str) -> Vec<u8> {
+    seq.bytes().filter_map(|c| {
+        let code = crate::amino::encode_aa(c);
+        if code >= 1 { Some(code) } else { None }
+    }).collect()
+}
+
 pub fn decode_sequence(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| decode_base(b)).collect()
 }
@@ -557,6 +565,7 @@ pub struct BitPop {
 
     /// Fuzzy k-mer matching method for improved strain resolution
     fuzzy_method: FuzzyMethod,
+    protein_mode: bool,  // true = AA encoding, no reverse complement
 
     /// Maximum number of mismatches allowed in fuzzy matching (default: 1)
     fuzzy_mismatches: usize,
@@ -596,6 +605,7 @@ impl BitPop {
             ],
             read_type: "short".to_string(),
             fuzzy_method: FuzzyMethod::None,
+            protein_mode: false,
             fuzzy_mismatches: 1,
             neighborhood_hash: None,
         }
@@ -672,6 +682,10 @@ impl BitPop {
         self.fuzzy_mismatches = mismatches.max(1);
     }
 
+    /// Enable protein mode: AA encoding, no reverse complement. Call before build().
+    pub fn set_protein_mode(&mut self, v: bool) { self.protein_mode = v; }
+    pub fn is_protein_mode(&self) -> bool { self.protein_mode }
+
     /// Add a genome (reference sequence) to the index.
     ///
     /// Returns the assigned genome_id (0-based, sequential).
@@ -691,7 +705,7 @@ impl BitPop {
     /// ```
     pub fn add_genome(&mut self, name: &str, sequence: &str) -> u32 {
         let genome_id = self.genomes.len() as u32;
-        let encoded = encode_sequence(sequence);
+        let encoded = if self.protein_mode { encode_sequence_aa(sequence) } else { encode_sequence(sequence) };
         self.genome_names.insert(genome_id, name.to_string());
         self.genomes.insert(genome_id, encoded.clone());
         genome_id
@@ -842,7 +856,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         if encoded.len() < self.k {
             return Vec::new();
         }
@@ -903,7 +917,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         if encoded.len() < self.k {
             return Vec::new();
         }
@@ -943,7 +957,7 @@ impl BitPop {
     /// Aligns a read against a genome region starting at position.
     /// Returns (alignment_score_0_to_1, cigar_string, aligned_start_offset).
     pub fn align_read(&self, read: &str, genome_id: u32, position: u64) -> (f64, String, usize) {
-        let read_enc = encode_sequence(read);
+        let read_enc = self.encode_read(read);
         let genome = match self.genomes.get(&genome_id) {
             Some(g) => g,
             None => return (0.0, String::new(), 0),
@@ -980,7 +994,7 @@ impl BitPop {
     /// Aligns a read against a genome region using SW with full traceback.
     /// Returns (alignment_score_0_to_1, cigar_string, best_offset_in_region).
     pub fn align_read_sw(&self, read: &str, genome_id: u32, position: u64) -> (f64, String, usize) {
-        let read_enc = encode_sequence(read);
+        let read_enc = self.encode_read(read);
         let genome = match self.genomes.get(&genome_id) {
             Some(g) => g,
             None => return (0.0, String::new(), 0),
@@ -1035,7 +1049,7 @@ impl BitPop {
         genome_id: u32,
         position: u64,
     ) -> (f64, String, usize, f64) {
-        let read_enc = encode_sequence(read);
+        let read_enc = self.encode_read(read);
         let genome = match self.genomes.get(&genome_id) {
             Some(g) => g,
             None => return (0.0, String::new(), 0, 0.0),
@@ -1162,7 +1176,7 @@ impl BitPop {
         };
 
         let read_len = encode_sequence(read).len();
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let mut results = Vec::new();
 
         let rarity = if encoded.len() >= self.k {
@@ -1217,7 +1231,7 @@ impl BitPop {
         };
 
         let read_len = encode_sequence(read).len();
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let mut results = Vec::new();
 
         let top_candidates = candidates.iter().take(50);
@@ -1646,7 +1660,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let window_size = if self.use_spaced_seed {
             self.spaced_seed_pattern.len()
         } else {
@@ -1685,13 +1699,21 @@ impl BitPop {
         let mut seen: std::collections::HashSet<(u32, u64)> = std::collections::HashSet::new();
 
         for &(anchor_read_offset, ref anchor_kmer, _) in &top_n_kmers {
+            // Protein mode: fetch ALL positions (no cap) — correct protein may be
+            // beyond the 500-position cap used in DNA mode.
+            let pos_cap = if self.protein_mode { usize::MAX } else { 500 };
             let raw_positions = if self.use_spaced_seed {
-                fm.find_positions_spaced(anchor_kmer, &self.spaced_seed_pattern, 500)
+                fm.find_positions_spaced(anchor_kmer, &self.spaced_seed_pattern, pos_cap)
             } else {
-                fm.find_positions(anchor_kmer, 500)
+                fm.find_positions(anchor_kmer, pos_cap)
             };
 
-            let positions: Vec<(u32, u64)> = if raw_positions.len() > 100 {
+            // In protein mode: never subsample positions — real protein position
+            // may be in the subsampled-away fraction.
+            // In DNA mode: keep original subsampling for performance.
+            let positions: Vec<(u32, u64)> = if self.protein_mode {
+                raw_positions
+            } else if raw_positions.len() > 100 {
                 let stride = raw_positions.len() / 100;
                 raw_positions.into_iter().step_by(stride).collect()
             } else {
@@ -1707,6 +1729,37 @@ impl BitPop {
                     Some(g) => g,
                     None => continue,
                 };
+
+                // Protein mode: direct byte comparison — bypasses 2-bit XOR
+                // which only uses bottom 2 bits of each AA code (incorrect for 5-bit codes).
+                if self.protein_mode {
+                    let start = position as isize - anchor_read_offset as isize;
+                    if start < 0 { continue; }
+                    let start = start as usize;
+                    let end = start + read_len;
+                    if end > genome.len() { continue; }
+                    let region = &genome[start..end];
+                    if self.fuzzy_mismatches == 0 || matches!(self.fuzzy_method, FuzzyMethod::None) {
+                        // Exact match: direct byte comparison
+                        if region == encoded.as_slice() {
+                            let cigar = format!("{}M", read_len);
+                            scored.push((genome_id, start as u64, 1.0f64, cigar));
+                        }
+                    } else {
+                        // Fuzzy match: count mismatches using 5-bit AA packing
+                        let mismatches = region.iter().zip(encoded.iter())
+                            .filter(|(a, b)| a != b)
+                            .count();
+                        if mismatches <= self.fuzzy_mismatches {
+                            let score = (read_len - mismatches) as f64 / read_len as f64;
+                            let cigar = region.iter().zip(encoded.iter())
+                                .map(|(a, b)| if a == b { 'M' } else { 'X' })
+                                .collect::<String>();
+                            scored.push((genome_id, start as u64, score, cigar));
+                        }
+                    }
+                    continue;  // skip the DNA alignment path below
+                }
 
                 let estimated_read_start = position as isize - anchor_read_offset as isize;
 
@@ -1813,7 +1866,11 @@ impl BitPop {
         }
 
         scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(50);
+        // In protein mode: don't truncate — all exact hits across all proteins are valid.
+        // In DNA mode: keep truncate(50) for performance.
+        if !self.protein_mode {
+            scored.truncate(50);
+        }
         scored
     }
 
@@ -1831,7 +1888,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         if encoded.len() < self.k {
             return Vec::new();
         }
@@ -1998,7 +2055,7 @@ impl BitPop {
         min_quality: u8,
         max_hits: usize,
     ) -> Vec<(u32, u64, f64, String, f64)> {
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let read_len = encoded.len();
 
         // Compute smart threshold based on quality distribution
@@ -2029,7 +2086,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         if encoded.len() < self.k {
             return Vec::new();
         }
@@ -2204,7 +2261,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let mut results = Vec::new();
 
         for &(genome_id, position, align_score, ref cigar, quality_penalty) in &scored {
@@ -2324,6 +2381,7 @@ impl BitPop {
         context_window: usize,
     ) -> Vec<MappingResult> {
         let forward_results = self.map_read_orientation(read, mode, context_window, false);
+        if self.protein_mode { return forward_results; }  // proteins have no strand
         let rc_read = reverse_complement(read);
         let rc_results = self.map_read_orientation(&rc_read, mode, context_window, true);
 
@@ -2364,6 +2422,10 @@ impl BitPop {
         }
     }
 
+    fn encode_read(&self, read: &str) -> Vec<u8> {
+        if self.protein_mode { encode_sequence_aa(read) } else { encode_sequence(read) }
+    }
+
     /// Map a single orientation (forward or RC) of a read.
     fn map_read_orientation(
         &self,
@@ -2372,7 +2434,10 @@ impl BitPop {
         context_window: usize,
         _is_rc: bool,
     ) -> Vec<MappingResult> {
-        let scored = self.anchor_filter_with_mode(read, mode, 0.7, DEFAULT_REPEAT_THRESHOLD);
+        // Protein mode: disable k-mer repeat filter (common 5-mers in large proteomes
+        // are not repeats — they are valid seeds that must not be skipped).
+        let repeat_thresh = if self.protein_mode { usize::MAX } else { DEFAULT_REPEAT_THRESHOLD };
+        let scored = self.anchor_filter_with_mode(read, mode, 0.7, repeat_thresh);
         if scored.is_empty() {
             return Vec::new();
         }
@@ -2471,7 +2536,7 @@ impl BitPop {
             None => return Vec::new(),
         };
 
-        let encoded = encode_sequence(read);
+        let encoded = self.encode_read(read);
         let mut results = Vec::new();
 
         for &(genome_id, position, align_score, ref cigar, quality_penalty) in &scored {
@@ -2584,6 +2649,7 @@ impl BitPop {
             ],
             read_type: "short".to_string(),
             fuzzy_method: FuzzyMethod::None,
+            protein_mode: false,
             fuzzy_mismatches: 1,
             neighborhood_hash: None,
         }

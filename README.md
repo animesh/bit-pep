@@ -1,12 +1,85 @@
 # Bit-Pep: Multi-Proteome Peptide Classification
 
-Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s)
+Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) 
 
 ```bash
 bash setup.sh
 pip install requests
-python make_test_peptides.py                         # SARS-CoV-2 default
-python make_test_peptides.py --proteome UP000005640  # Human (takes ~30s to download)
+```
+## create peptides 
+
+```
+python make_test_peptides.py --proteome UP000005640
+Protease cut sites : KR
+  → cuts after    : K or R
+  → no cut before : P  (proline rule)
+Missed cleavages   : 0
+Length range       : 6–50 AA
+
+Using cached FASTA: UP000005640.fasta
+Parsed 83526 proteins
+
+Digest summary:
+  Protease           : Trypsin
+  Cut sites          : KR (not before P)
+  Missed cleavages   : 0
+  Total peptides     : 1643988
+  Unique sequences   : 626677
+  Unique to 1 protein: 294749
+  Shared (>1 protein): 331928
+  Length range       : 6–50 AA
+
+Wrote 626677 unique peptides -> peptides.txt
+Wrote 10-peptide sample  -> peptides_sample10.txt
+Wrote space-separated    -> peptides_spacesep.txt
+
+Done. The unique count here (294749 unique-to-1-protein) should match
+bit-pop run-prot exactly because both enforce fully-tryptic hits.
+
+Next:
+  cargo run --bin bit-pop -- run-prot UP000005640.fasta -p peptides.txt
+```
+
+## map peptides to proteome
+
+```
+cargo run --bin bit-pep -- run-prot UP000005640.fasta -p peptides.txt -j 12
+   Compiling bit-pep v0.2.0 (/mnt/z/Download/bit-pep)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.99s
+     Running `target/debug/bit-pep run-prot UP000005640.fasta -p peptides.txt -j 12`
+Bit-Pop RunProt  (FM-index parallel peptide->proteome search)
+===============================================================
+
+[1/4] Resolving proteome...
+  UP000005640.fasta (38.7 MB)
+
+[2/4] Indexing proteins (k=5)...
+  Loading: [00:00:03 ████████████████████████████████████████ 83526/83526]                                                  83526 proteins indexed in 15.9s  (12 threads)
+
+[3/4] Loading peptides...
+INFO: loaded 626677 peptides
+  626677 peptides
+
+[4/4] Mapping (12 threads)...
+  Mapping: [00:00:07 ████████████████████████████████████████ 626677/626677]                                              
+===============================================================
+  Output  : peptides.pep.tsv
+  Mapping : 19.00s  |  Total: 36.88s
+
+─────────────────────────────────────────
+Peptides submitted : 626677
+Mapped             : 626677 (100.0%)
+  unique            : 294749
+  shared (>1 prot.) : 331928
+  cross-proteome    : 0
+Unmapped           : 0
+─────────────────────────────────────────
+
+Peptides by organism:
+  Organism                                      Peptides
+  -------------------------------------------------------
+  Homo sapiens                                    626677
+
 ```
 
 ## Plan @claude-code

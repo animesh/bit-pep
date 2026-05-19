@@ -1,10 +1,21 @@
 [package]
-name = "bit-pop"
+name = "bit-pep"
 version = "0.2.0"
 edition = "2021"
 description = "Multi-stage genomic read mapper: k-mer inverted index → bit-level alignment → multi-genome ranking"
 license = "MIT"
 authors = ["Mladen Popovic <mladenpop@gmail.com>"]
+
+[lib]
+name = "bit_pop"   # keeps all `use bit_pop::` imports working
+
+[[bin]]
+name = "bit-pep"
+path = "src/main.rs"
+
+[[bin]]
+name = "extract_seqs"
+path = "src/bin/extract_seqs.rs"
 
 [dependencies]
 anyhow      = "1"

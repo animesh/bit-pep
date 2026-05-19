@@ -7,6 +7,7 @@ use bit_pop::cache::CacheManager;
 use bit_pop::fastq::{parse_reads, ReadsFormat};
 use bit_pop::ncbi::{NcbiClient, NcbiConfig};
 use bit_pop::{AlignMode, BitPop, FuzzyMethod};
+use rayon::prelude::*;
 
 fn extract_cami_genome_name(basename: &str) -> String {
     if basename.starts_with("evo_") {
@@ -57,6 +58,8 @@ enum Commands {
 
     /// Apply EM algorithm for soft-assignment classification
     Em(EmArgs),
+    /// Map peptide list against a proteome → protein+species TSV
+    RunProt(RunProtArgs),
 }
 
 #[derive(clap::Args)]
@@ -436,6 +439,7 @@ async fn main() {
             cmd_em(&args);
             Ok(())
         }
+        Commands::RunProt(args) => cmd_run_prot(&args),
     } {
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -2174,4 +2178,271 @@ fn cmd_em(args: &EmArgs) {
     println!("  Classifications changed: {}", changed);
     println!();
     println!("EM completed in {:.2}s total", elapsed.as_secs_f64());
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// PROTEIN MODE — RunProt
+// ══════════════════════════════════════════════════════════════════════════
+
+#[derive(clap::Args)]
+pub struct RunProtArgs {
+    /// Proteome source: local FASTA path | UniProt UPID (UP000005640) | sprot | trembl | isoforms
+    proteome: String,
+    /// Peptide input file: one per line, space-separated, or FASTA format
+    #[arg(short, long, required = true)]
+    peptides: PathBuf,
+    /// Output TSV (default: <peptides_stem>.pep.tsv)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// k-mer seed size (default 5 for proteins; 20^5 = 3.2M unique k-mers)
+    #[arg(short, long, default_value = "5")]
+    k: usize,
+    /// Minimum alignment score 0.0–1.0
+    #[arg(long, default_value = "0.7")]
+    min_score: f64,
+    /// Max mismatches in k-mer seed for fuzzy search (0 = exact only)
+    #[arg(long, default_value = "0")]
+    fuzzy_mismatches: usize,
+    /// Number of parallel threads (default: all logical CPUs)
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
+
+    /// Force re-download if proteome is a UPID
+    #[arg(long)]
+    force: bool,
+}
+
+/// Parse UniProt FASTA header →  (accession, protein_name, organism, gene)
+/// Handles: >sp|P04637|P53_HUMAN Cellular tumor antigen p53 OS=Homo sapiens OX=9606 GN=TP53 ...
+fn parse_uniprot_header(header: &str) -> (String, String, String, String) {
+    let parts: Vec<&str> = header.splitn(3, '|').collect();
+    let (acc, rest) = if parts.len() == 3 {
+        (parts[1].to_string(), parts[2])
+    } else {
+        (header.split_whitespace().next().unwrap_or("?").to_string(), header)
+    };
+    let protein_name = rest.split(" OS=").next().unwrap_or(rest).trim().to_string();
+    let organism = rest.split(" OS=").nth(1)
+        .and_then(|s| s.split(" OX=").next())
+        .and_then(|s| s.split(" GN=").next())
+        .unwrap_or("unknown").trim().to_string();
+    let gene = rest.split(" GN=").nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap_or("").to_string();
+    (acc, protein_name, organism, gene)
+}
+
+fn resolve_prot_fasta(proteome: &str, force: bool) -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let cache = PathBuf::from(&home).join(".cache").join("bit-pop").join("proteomes");
+    match proteome {
+        "sprot"    => { let p = cache.join("uniprot_sprot.fasta");          if p.exists() { return Ok(p); } return Err(format!("sprot not cached — run: bit-pop fetch-bulk --db sprot")); }
+        "trembl"   => { let p = cache.join("uniprot_trembl.fasta");         if p.exists() { return Ok(p); } return Err(format!("trembl not cached — run: bit-pop fetch-bulk --db trembl")); }
+        "isoforms" => { let p = cache.join("uniprot_sprot_varsplic.fasta"); if p.exists() { return Ok(p); } return Err(format!("isoforms not cached — run: bit-pop fetch-bulk --db isoforms")); }
+        _ => {}
+    }
+    let local = PathBuf::from(proteome);
+    if local.exists() { return Ok(local); }
+    if proteome.starts_with("UP") && proteome.len() == 11 {
+        let dest = cache.join(format!("{}.fasta", proteome));
+        if !force && dest.exists() && std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) > 1000 {
+            return Ok(dest);
+        }
+        return Err(format!("Proteome {} not cached — run: bit-pop fetch-proteome --proteome {}", proteome, proteome));
+    }
+    Err(format!("Cannot resolve '{}': not a local file, UPID, or bulk keyword", proteome))
+}
+
+pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
+    use bit_pop::peptide_input::parse_peptide_file;
+    use bit_pop::pep_output::{assign_status, print_summary, write_tsv, HitStatus, PepHit};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // Configure rayon thread pool before first par_iter
+    if let Some(n) = args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .unwrap_or(());
+    }
+
+    let t0 = Instant::now();
+    println!("Bit-Pop RunProt  (FM-index parallel peptide->proteome search)");
+    println!("===============================================================");
+
+    // [1/4] Locate FASTA
+    println!("\n[1/4] Resolving proteome...");
+    let fasta_path = resolve_prot_fasta(&args.proteome, args.force)?;
+    println!("  {} ({:.1} MB)", fasta_path.display(),
+        std::fs::metadata(&fasta_path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0);
+
+    // [2/4] Build FM-index
+    println!("\n[2/4] Indexing proteins (k={})...", args.k);
+    let t1 = Instant::now();
+    let mut bp = bit_pop::BitPop::new(args.k);
+    bp.set_protein_mode(true);
+    if args.fuzzy_mismatches > 0 {
+        bp.set_fuzzy_method(bit_pop::FuzzyMethod::FuzzyKmer);
+        bp.set_fuzzy_mismatches(args.fuzzy_mismatches);
+    }
+
+    let seqs = bit_pop::fasta::read_all_sequences(fasta_path.to_str().unwrap())
+        .map_err(|e| format!("Cannot read FASTA: {}", e))?;
+
+    // genome_id -> (acc, protein_name, organism, gene, sequence_uppercase)
+    // sequence stored for tryptic position validation after FM-index hit
+    let mut meta: HashMap<u32, (String, String, String, String, String)> = HashMap::new();
+
+    let pb = ProgressBar::new(seqs.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner} Loading: [{elapsed_precise} {bar:40} {pos}/{len}]").unwrap());
+    for (header, seq) in &seqs {
+        let (acc, pname, org, gene) = parse_uniprot_header(header);
+        let gid = bp.add_genome(&acc, seq);
+        meta.insert(gid, (acc, pname, org, gene, seq.to_uppercase()));
+        pb.inc(1);
+    }
+    pb.finish_with_message("loaded");
+    bp.build();
+    let n_threads = rayon::current_num_threads();
+    println!("  {} proteins indexed in {:.1}s  ({} threads)",
+        seqs.len(), t1.elapsed().as_secs_f64(), n_threads);
+
+    // [3/4] Load peptides
+    println!("\n[3/4] Loading peptides...");
+    let peptides = parse_peptide_file(args.peptides.to_str().unwrap())
+        .map_err(|e| format!("Cannot parse peptides: {}", e))?;
+    println!("  {} peptides", peptides.len());
+
+    // [4/4] Parallel mapping
+    println!("\n[4/4] Mapping ({} threads)...", n_threads);
+    let t2 = Instant::now();
+
+    // bp and meta wrapped in Arc for sharing across rayon threads
+    let bp   = Arc::new(bp);
+    let meta = Arc::new(meta);
+
+    let pb2 = Arc::new(ProgressBar::new(peptides.len() as u64));
+    pb2.set_style(ProgressStyle::default_bar()
+        .template("{spinner} Mapping: [{elapsed_precise} {bar:40} {pos}/{len}]").unwrap());
+
+    let raw_hits: Vec<(usize, Vec<PepHit>)> = peptides
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, pep)| {
+            pb2.inc(1);
+            if pep.sequence.len() < args.k { return None; }
+
+            let results = bp.map_read_with_mode(
+                &pep.sequence,
+                bit_pop::AlignMode::Xor,
+                0,
+            );
+
+            let pep_len = pep.sequence.len();
+            let mut hits: Vec<PepHit> = Vec::new();
+
+            for r in results {
+                if r.score < args.min_score { continue; }
+
+                let pos0 = r.position as usize;  // 0-based
+
+                // Tryptic validation — mirrors make_test_peptides.py rules exactly:
+                //   N-term: pos0 > 0 (not protein N-term)
+                //           AND prot[pos0-1] in {K,R} (preceded by cut site)
+                //           AND prot[pos0]   != P     (proline rule: no cut before P)
+                //   C-term: end0 < prot.len() (not protein C-term)
+                //           AND prot[end0-1] in {K,R} (ends with cut site)
+                //           AND prot[end0]   != P     (proline rule: cut site not before P)
+                let tryptic = if let Some(m) = meta.get(&r.genome_id) {
+                    let prot = m.4.as_bytes();
+                    let end0 = pos0 + pep_len;
+                    end0 < prot.len()               // not C-terminal peptide
+                        && pos0 > 0                 // not N-terminal peptide
+                        && matches!(prot[pos0 - 1], b'K' | b'R')  // N-term: preceded by cut site
+                        && prot[pos0] != b'P'                      // N-term: proline rule
+                        && matches!(prot[end0 - 1], b'K' | b'R')  // C-term: ends with cut site
+                        && prot[end0] != b'P'                      // C-term: proline rule
+                } else { false };
+
+                if !tryptic { continue; }
+
+                let (acc, pname, org, gene, _) = meta.get(&r.genome_id)
+                    .cloned().unwrap_or_default();
+                hits.push(PepHit {
+                    peptide_id:   pep.id.clone(),
+                    sequence:     pep.sequence.clone(),
+                    protein_acc:  acc,
+                    protein_name: format!("{} [{}] {}", pname, gene, org),
+                    proteome_id:  args.proteome.clone(),
+                    start:        pos0 + 1,
+                    end:          pos0 + pep_len,
+                    score:        r.score as f32,
+                    mismatches:   r.cigar.split('X').count().saturating_sub(1) as u32,
+                    status:       HitStatus::Unmapped,
+                });
+            }
+
+            if hits.is_empty() { None } else { Some((idx, hits)) }
+        })
+        .collect();
+
+    pb2.finish_with_message("done");
+
+    // Assign unique/shared/xproteome status and flatten
+    let mapped: std::collections::HashSet<usize> = raw_hits.iter().map(|(i,_)| *i).collect();
+    let mut all_hits: Vec<PepHit> = Vec::new();
+    for (_, mut hits) in raw_hits {
+        assign_status(&mut hits);
+        all_hits.extend(hits);
+    }
+    // Unmapped rows for peptides with no tryptic hit
+    for (idx, pep) in peptides.iter().enumerate() {
+        if !mapped.contains(&idx) {
+            all_hits.push(PepHit {
+                peptide_id: pep.id.clone(), sequence: pep.sequence.clone(),
+                protein_acc: String::new(), protein_name: String::new(),
+                proteome_id: args.proteome.clone(),
+                start: 0, end: 0, score: 0.0, mismatches: 0,
+                status: HitStatus::Unmapped,
+            });
+        }
+    }
+
+    // Write TSV
+    let out = args.output.clone().unwrap_or_else(|| {
+        PathBuf::from(format!("{}.pep.tsv",
+            args.peptides.file_stem().unwrap_or_default().to_string_lossy()))
+    });
+    write_tsv(&all_hits, out.to_str().unwrap()).map_err(|e| format!("TSV write: {}", e))?;
+
+    println!("\n===============================================================");
+    println!("  Output  : {}", out.display());
+    println!("  Mapping : {:.2}s  |  Total: {:.2}s\n",
+        t2.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
+    print_summary(&all_hits, peptides.len());
+
+    // Per-organism peptide count
+    let mut by_org: std::collections::BTreeMap<String, std::collections::HashSet<String>> =
+        std::collections::BTreeMap::new();
+    for h in &all_hits {
+        if h.status != HitStatus::Unmapped {
+            let org = h.protein_name.split("] ").last().unwrap_or("").trim().to_string();
+            by_org.entry(org).or_default().insert(h.peptide_id.clone());
+        }
+    }
+    if !by_org.is_empty() {
+        println!("\nPeptides by organism:");
+        println!("  {:<45} {:>8}", "Organism", "Peptides");
+        println!("  {}", "-".repeat(55));
+        let mut rows: Vec<_> = by_org.iter().collect();
+        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.len()));
+        for (org, peps) in rows.iter().take(20) {
+            println!("  {:<45} {:>8}", org, peps.len());
+        }
+        if rows.len() > 20 { println!("  ... and {} more", rows.len() - 20); }
+    }
+    Ok(())
 }

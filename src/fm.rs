@@ -6,7 +6,7 @@
 use libsais::SuffixArrayConstruction;
 use rayon::prelude::*;
 
-const ALPHABET_SIZE: usize = 5; // $=0, A=1, C=2, G=3, T=4
+pub const ALPHABET_SIZE: usize = 27; // sentinel=0, 20 std AAs=1-20, 6 IUPAC ambiguous=21-26 // $=0, A=1, C=2, G=3, T=4
 const SAMPLE_INTERVAL: usize = 32;
 
 // --- Suffix Array Construction (SA-IS via libsais, O(n)) ---
@@ -308,7 +308,7 @@ impl FmIndex {
             let start = s.len();
             for &byte in *seq {
                 // Input bytes should be 1-4 (A=1, C=2, G=3, T=4)
-                if (1..=4).contains(&byte) {
+                if (1..=26).contains(&byte) {
                     s.push(byte);
                 }
             }
@@ -360,7 +360,7 @@ impl FmIndex {
         for (gid, (_, seq)) in genomes.iter().enumerate() {
             let start = s.len();
             for &byte in *seq {
-                if (1..=4).contains(&byte) {
+                if (1..=26).contains(&byte) {
                     s.push(byte);
                 }
             }
@@ -410,7 +410,7 @@ impl FmIndex {
 
         for &byte in pattern.iter().rev() {
             let c = byte;
-            if c == 0 || c > 4 {
+            if c == 0 || c as usize >= ALPHABET_SIZE {
                 return None;
             }
             let ci = c as usize;
@@ -664,7 +664,7 @@ impl FmIndex {
 
         // Try alternative bases (mismatch)
         if mismatches < max_mismatches {
-            for alt in 1..=4u8 {
+            for alt in 1..=20u8 {  // standard 20 AAs
                 if alt != original_base {
                     let mut modified_kmer = kmer.to_vec();
                     modified_kmer[pos] = alt;
@@ -755,7 +755,7 @@ impl FmIndex {
     pub fn from_components(
         bwt: Vec<u8>,
         sa: Vec<usize>,
-        c_array: [usize; 5],
+        c_array: [usize; ALPHABET_SIZE],
         occ: OccCounter,
         genome_boundaries: Vec<(usize, usize, u32)>,
         num_genomes: usize,

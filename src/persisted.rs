@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Result as IoResult};
+use crate::fm::ALPHABET_SIZE;
 
 use memmap2::Mmap;
 use sha2::{Digest, Sha256};
@@ -12,7 +13,7 @@ type GenomeData = (HashMap<u32, Vec<u8>>, HashMap<u32, String>);
 // --- File Format Constants ---
 
 const MAGIC: [u8; 4] = *b"BITP";
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;  // v6: c_array size = ALPHABET_SIZE (27) for protein mode
 const HEADER_SIZE: usize = 64;
 const SECTION_NAME_LEN: usize = 16;
 const SECTION_HEADER_SIZE: usize = 48; // name[16] + offset(8) + comp_size(8) + decomp_size(8) + flags(8)
@@ -214,7 +215,7 @@ fn serialize_fm_index(bp: &BitPop) -> IoResult<Vec<u8>> {
     }
 
     // C-array: u32 x 5
-    for j in 0..5 {
+    for j in 0..ALPHABET_SIZE {
         data.extend_from_slice(&(fm.c_array(j) as u32).to_le_bytes());
     }
 
@@ -492,8 +493,9 @@ pub fn load_bitpop(path: &str) -> IoResult<BitPop> {
         fm_pos += 8 + (sa_len_from_fm * 4); // skip SA_LEN + SA entries
 
         // C-array
-        let mut c_array = [0usize; 5];
-        for j in 0..5 {
+        let mut c_array = [0usize; ALPHABET_SIZE];
+        let c_n = if version >= 6 { ALPHABET_SIZE } else { 5 };
+        for j in 0..c_n {
             if fm_pos + 4 > fm_data.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -622,8 +624,9 @@ pub fn load_bitpop(path: &str) -> IoResult<BitPop> {
             fm_pos += 4;
         }
 
-        let mut c_array = [0usize; 5];
-        for j in 0..5 {
+        let mut c_array = [0usize; ALPHABET_SIZE];
+        let c_n = if version >= 6 { ALPHABET_SIZE } else { 5 };
+        for j in 0..c_n {
             if fm_pos + 4 > fm_data.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -985,8 +988,9 @@ pub fn load_legacy_bitpop(path: &str) -> IoResult<BitPop> {
         fm_pos += 4;
     }
 
-    let mut c_array = [0usize; 5];
-    for j in 0..5 {
+    let mut c_array = [0usize; ALPHABET_SIZE];
+    let c_n = if version >= 6 { ALPHABET_SIZE } else { 5 };
+    for j in 0..c_n {
         if fm_pos + 4 > fm_data.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
