@@ -9,68 +9,70 @@ pip install requests
 ## create peptides 
 
 ```
-python make_test_peptides.py --proteome UP000005640
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
+python make_test_peptides.py --fasta uniprot_sprot.fasta
 Protease cut sites : KR
   → cuts after    : K or R
   → no cut before : P  (proline rule)
 Missed cleavages   : 0
-Length range       : 6–50 AA
+Length range       : 5–35 AA
 
-Using cached FASTA: UP000005640.fasta
-Parsed 83526 proteins
+Using local FASTA: uniprot_sprot.fasta
+Parsed 574627 proteins
 
 Digest summary:
   Protease           : Trypsin
   Cut sites          : KR (not before P)
   Missed cleavages   : 0
-  Total peptides     : 1643988
-  Unique sequences   : 626677
-  Unique to 1 protein: 294749
-  Shared (>1 protein): 331928
-  Length range       : 6–50 AA
+  Total peptides     : 12484980
+  Unique sequences   : 6574244
+  Unique to 1 protein: 5034810
+  Shared (>1 protein): 1539434
+  Length range       : 5–35 AA
 
-Wrote 626677 unique peptides -> peptides.txt
+Wrote 6574244 unique peptides -> peptides.txt
 Wrote 10-peptide sample  -> peptides_sample10.txt
 Wrote space-separated    -> peptides_spacesep.txt
 
-Done. The unique count here (294749 unique-to-1-protein) should match
+Done. The unique count here (5034810 unique-to-1-protein) should match
 bit-pop run-prot exactly because both enforce fully-tryptic hits.
 
 Next:
-  cargo run --bin bit-pop -- run-prot UP000005640.fasta -p peptides.txt
+  cargo run --bin bit-pep -- run-prot <fasta> -p <peptides> -j <threads>
 ```
 
 ## map peptides to proteome
 
 ```
-cargo run --bin bit-pep -- run-prot UP000005640.fasta -p peptides.txt -j 12
-   Compiling bit-pep v0.2.0 (/mnt/z/Download/bit-pep)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.99s
-     Running `target/debug/bit-pep run-prot UP000005640.fasta -p peptides.txt -j 12`
+root㉿DMED7596)-[~/Download/bit-pep]
+└─# cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 12
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.54s
+     Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt -j 12`
 Bit-Pop RunProt  (FM-index parallel peptide->proteome search)
 ===============================================================
 
 [1/4] Resolving proteome...
-  UP000005640.fasta (38.7 MB)
+  uniprot_sprot.fasta (274.2 MB)
 
 [2/4] Indexing proteins (k=5)...
-  Loading: [00:00:03 ████████████████████████████████████████ 83526/83526]                                                  83526 proteins indexed in 15.9s  (12 threads)
+  Loading: [00:00:22 ████████████████████████████████████████ 574627/574627]                                                                                                                                                  574627 proteins indexed in 119.6s  (12 threads)
 
 [3/4] Loading peptides...
-INFO: loaded 626677 peptides
-  626677 peptides
+INFO: loaded 6574244 peptides
+  6574244 peptides
 
 [4/4] Mapping (12 threads)...
-  Mapping: [00:00:07 ████████████████████████████████████████ 626677/626677]                                              
+  Mapping: [00:03:43 ████████████████████████████████████████ 6574244/6574244]                                                                                                                                              
 ===============================================================
   Output  : peptides.pep.tsv
-  Mapping : 19.00s  |  Total: 36.88s
+  Mapping : 331.94s  |  Total: 470.90s
 
 ─────────────────────────────────────────
-Peptides submitted : 626677
-Mapped             : 626677 (100.0%)
-  unique            : 294749
-  shared (>1 prot.) : 331928
+Peptides submitted : 6574244
+Mapped             : 6574244 (100.0%)
+  unique            : 5034810
+  shared (>1 prot.) : 1539434
   cross-proteome    : 0
 Unmapped           : 0
 ─────────────────────────────────────────
@@ -78,9 +80,151 @@ Unmapped           : 0
 Peptides by organism:
   Organism                                      Peptides
   -------------------------------------------------------
-  Homo sapiens                                    626677
+  Homo sapiens                                    595087
+  Mus musculus                                    528813
+  Arabidopsis thaliana                            398826
+  Rattus norvegicus                               232527
+  Saccharomyces cerevisiae (strain ATCC 204508 / S288c)   169142
+  Caenorhabditis elegans                          139158
+  Bos taurus                                      138162
+  Schizosaccharomyces pombe (strain 972 / ATCC 24843)   137113
+  Drosophila melanogaster                         133559
+  Dictyostelium discoideum                        119652
+  Oryza sativa subsp. japonica                    100517
+  Danio rerio                                      92698
+  Xenopus laevis                                   85323
+  Escherichia coli (strain K12)                    74081
+  Bacillus subtilis (strain 168)                   70775
+  Gallus gallus                                    65487
+  Pongo abelii                                     58741
+  Xenopus tropicalis                               43765
+  Mycobacterium tuberculosis (strain ATCC 25618 / H37Rv)    41206
+  Emericella nidulans (strain FGSC A4 / ATCC 38163 / CBS 112.46 / NRRL 194 / M139)    35157
+  ... and 14407 more
+```
+
+### overlapping peptides
 
 ```
+python make_test_peptides.py --fasta UP000000625.fasta --mode sliding --min-len 10 --max-len 15
+    Mode               : sliding
+    Length range       : 10–15 AA
+
+    Using local FASTA: UP000000625.fasta
+    Parsed 4403 proteins
+
+    Digest summary:
+    Window step        : 1 (every position)
+    Total peptides     : 7822952
+    Unique sequences   : 7700254
+    Unique to 1 protein: 7639466
+    Shared (>1 protein): 60788
+    Length range       : 10–15 AA
+
+    Wrote 7700254 unique peptides -> peptides.txt
+    Wrote 10-peptide sample  -> peptides_sample10.txt
+    Wrote space-separated    -> peptides_spacesep.txt
+
+    The unique count here (7639466) should match bit-pep run-prot.
+
+    Next:
+    cargo run --bin bit-pep -- run-prot UP000000625.fasta -p peptides.txt --sliding -j 12
+
+
+cargo run --bin bit-pep -- run-prot UP000000625.fasta -p peptides.txt --sliding -j 12
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.85s
+        Running `target/debug/bit-pep run-prot UP000000625.fasta -p peptides.txt --sliding -j 12`
+    Bit-Pop RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+
+    [1/4] Resolving proteome...
+    UP000000625.fasta (1.8 MB)
+
+    [2/4] Indexing proteins (k=5)...
+    Loading: [00:00:00 ████████████████████████████████████████ 4403/4403]                                                                                                                                                      4403 proteins indexed in 0.5s  (12 threads)
+
+    [3/4] Loading peptides...
+    INFO: loaded 7700254 peptides
+    7700254 peptides
+
+    [4/4] Mapping (12 threads)...
+    Mapping: [00:00:40 ████████████████████████████████████████ 7700254/7700254]                                                                                                                                              
+    ===============================================================
+    Output  : peptides.pep.tsv
+    Mapping : 110.72s  |  Total: 131.55s
+
+    ─────────────────────────────────────────
+    Peptides submitted : 7700254
+    Mapped             : 7700254 (100.0%)
+    unique            : 7639466
+    shared (>1 prot.) : 60788
+    cross-proteome    : 0
+    Unmapped           : 0
+    ─────────────────────────────────────────
+
+    Peptides by organism:
+    Organism                                      Peptides
+    -------------------------------------------------------
+    Escherichia coli (strain K12)                  7700254
+
+cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt --sliding -j 12
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.35s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt --sliding -j 12`
+    Bit-Pop RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+
+    [1/4] Resolving proteome...
+    uniprot_sprot.fasta (274.2 MB)
+
+    [2/4] Indexing proteins (k=5)...
+    Loading: [00:00:20 ████████████████████████████████████████ 574627/574627]                                                                                                                                                  574627 proteins indexed in 113.6s  (12 threads)
+
+    [3/4] Loading peptides...
+    INFO: loaded 7700254 peptides
+    7700254 peptides
+
+    [4/4] Mapping (12 threads)...
+    Mapping: [00:03:53 ████████████████████████████████████████ 7700254/7700254]                                                                                                                                              
+    ===============================================================
+    Output  : peptides.pep.tsv
+    Mapping : 796.86s  |  Total: 931.22s
+
+    ─────────────────────────────────────────
+    Peptides submitted : 7700254
+    Mapped             : 7700254 (100.0%)
+    unique            : 3404104
+    shared (>1 prot.) : 4296150
+    cross-proteome    : 0
+    Unmapped           : 0
+    ─────────────────────────────────────────
+
+    Peptides by organism:
+    Organism                                      Peptides
+    -------------------------------------------------------
+    Escherichia coli (strain K12)                  7700254
+    Escherichia coli O157:H7                       3269425
+    Escherichia coli O6:H1 (strain CFT073 / ATCC 700928 / UPEC)  2580399
+    Shigella flexneri                              2462718
+    Shigella sonnei (strain Ss046)                 1476864
+    Escherichia coli O9:H4 (strain HS)             1459090
+    Escherichia coli (strain ATCC 8739 / DSM 1576 / NBRC 3972 / NCIMB 8545 / WDCM 00012 / Crooks)  1427970
+    Escherichia coli O139:H28 (strain E24377A / ETEC)  1427177
+    Escherichia coli O6:K15:H31 (strain 536 / UPEC)  1422976
+    Shigella boydii serotype 4 (strain Sb227)      1383521
+    Salmonella typhimurium (strain LT2 / SGSC1412 / ATCC 700720)  1381670
+    Escherichia coli (strain K12 / DH10B)          1352198
+    Escherichia coli (strain UTI89 / UPEC)         1351763
+    Escherichia coli (strain K12 / MC4100 / BW2952)  1326828
+    Escherichia coli (strain SMS-3-5 / SECEC)      1313175
+    Shigella dysenteriae serotype 1 (strain Sd197)  1311758
+    Escherichia coli O8 (strain IAI1)              1286540
+    Escherichia coli (strain 55989 / EAEC)         1283376
+    Escherichia coli O17:K52:H18 (strain UMN026 / ExPEC)  1275366
+    Escherichia coli (strain SE11)                 1267223
+    ... and 3011 more
+```
+
+
 
 ## Plan @claude-code
 

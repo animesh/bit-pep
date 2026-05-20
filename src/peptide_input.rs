@@ -15,7 +15,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
 
-pub const MIN_PEPTIDE_LEN: usize = 6;
+pub const MIN_PEPTIDE_LEN: usize = 1;  // filtering by length is done at generation time
 pub const MAX_PEPTIDE_LEN: usize = 50; // soft guard; longer sequences accepted but warned
 
 const VALID_AA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ*";
@@ -174,8 +174,9 @@ mod tests {
     }
 
     #[test]
-    fn skips_too_short() {
-        let input = "ACD\nACDEFGHIKL\n"; // "ACD" is 3 < MIN_PEPTIDE_LEN
+    fn skips_invalid_chars() {
+        // Sequences with non-AA characters should be skipped
+        let input = "123456\nACDEFGHIKL\n"; // "123456" has invalid chars
         let peps = parse_peptide_str(input).unwrap();
         assert_eq!(peps.len(), 1);
     }

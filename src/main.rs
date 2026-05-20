@@ -2208,6 +2208,11 @@ pub struct RunProtArgs {
     #[arg(short = 'j', long)]
     threads: Option<usize>,
 
+    /// Use sliding-window (overlapping subsequence) mode instead of tryptic filtering.
+    /// In sliding mode every FM-index hit is accepted regardless of flanking residues.
+    #[arg(long)]
+    sliding: bool,
+
     /// Force re-download if proteome is a UPID
     #[arg(long)]
     force: bool,
@@ -2349,25 +2354,26 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
 
                 let pos0 = r.position as usize;  // 0-based
 
-                // Tryptic validation — mirrors make_test_peptides.py rules exactly:
-                //   N-term: pos0 > 0 (not protein N-term)
-                //           AND prot[pos0-1] in {K,R} (preceded by cut site)
-                //           AND prot[pos0]   != P     (proline rule: no cut before P)
-                //   C-term: end0 < prot.len() (not protein C-term)
-                //           AND prot[end0-1] in {K,R} (ends with cut site)
-                //           AND prot[end0]   != P     (proline rule: cut site not before P)
-                let tryptic = if let Some(m) = meta.get(&r.genome_id) {
-                    let prot = m.4.as_bytes();
-                    let end0 = pos0 + pep_len;
-                    end0 < prot.len()               // not C-terminal peptide
-                        && pos0 > 0                 // not N-terminal peptide
-                        && matches!(prot[pos0 - 1], b'K' | b'R')  // N-term: preceded by cut site
-                        && prot[pos0] != b'P'                      // N-term: proline rule
-                        && matches!(prot[end0 - 1], b'K' | b'R')  // C-term: ends with cut site
-                        && prot[end0] != b'P'                      // C-term: proline rule
-                } else { false };
-
-                if !tryptic { continue; }
+                // Validate hit: tryptic mode (default) or sliding-window mode (--sliding).
+                //
+                // Tryptic rules (mirrors make_test_peptides.py exactly):
+                //   N-term: pos0 > 0 AND prot[pos0-1] in {K,R} AND prot[pos0] != P
+                //   C-term: end0 < len AND prot[end0-1] in {K,R} AND prot[end0] != P
+                //
+                // Sliding mode: accept every hit regardless of flanking residues.
+                if !args.sliding {
+                    let valid = if let Some(m) = meta.get(&r.genome_id) {
+                        let prot = m.4.as_bytes();
+                        let end0 = pos0 + pep_len;
+                        end0 < prot.len()
+                            && pos0 > 0
+                            && matches!(prot[pos0 - 1], b'K' | b'R')
+                            && prot[pos0] != b'P'
+                            && matches!(prot[end0 - 1], b'K' | b'R')
+                            && prot[end0] != b'P'
+                    } else { false };
+                    if !valid { continue; }
+                }
 
                 let (acc, pname, org, gene, _) = meta.get(&r.genome_id)
                     .cloned().unwrap_or_default();
