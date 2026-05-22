@@ -69,10 +69,11 @@ cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 12
     ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
 ```
 
-## missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by including human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
+## missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
 ```
-python make_test_peptides.py --proteome UP000005640 
-cat uniprotkb_proteome_UP000005640_2024_04_18.fasta UP000005640.fasta > human.fasta
+wget "https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29" -O human.fasta
+wget https://zenodo.org/records/20344308/files/uniprotkb_proteome_UP000005640_2024_04_18.fasta 
+cat uniprotkb_proteome_UP000005640_2024_04_18.fasta >> human.fasta
 wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
 grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
 cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12 
@@ -119,6 +120,8 @@ cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12
 ### check for overlapping peptides by [Chopping Proteins to Peptides](https://fuzzylife.substack.com/p/chopping-proteins-to-peptides)
 
 ```
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
 wget https://raw.githubusercontent.com/animesh/scripts/d08e6ffb9c9fdc23f37fd12cdd280966d4c9e46e/pepCleave.pl
 perl pepCleave.pl uniprot_sprot.fasta 6 7
 grep -v "^>" uniprot_sprot.fasta.len6to7.fasta > uniprot_sprot.fasta.len6to7.txt
@@ -187,6 +190,68 @@ cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.l
 
     Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
     ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+```
+
+### confirm position hits by [2 selected peptides](pep2Q9UPZ3.txt) from [Q9UPZ3](https://www.uniprot.org/uniprotkb/Q9UPZ3/entry) [sequences](https://rest.uniprot.org/uniprotkb/Q9UPZ3.fasta)
+```
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
+wget https://raw.githubusercontent.com/animesh/scripts/079de9ce5a6d408d7508fb276f6ad248c58b99d7/pep2protmap.pl
+perl pep2protmap.pl uniprot_sprot.fasta pep2Q9UPZ3.txt 1
+
+    Read# 574627 sequences from uniprot_sprot.fasta
+
+    Opening peptide list from pep2Q9UPZ3.txt
+
+    >sp|Q9UPZ3|HPS5_HUMAN   569;
+    >sp|Q9UPZ3|HPS5_HUMAN   111;
+
+    Processed 2 Sequences
+    Found 2 Matches
+
+cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta  -p pep2Q9UPZ3.txt
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.24s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p pep2Q9UPZ3.txt`
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+
+    [1/4] Resolving proteome...
+    uniprot_sprot.fasta (274.2 MB)
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                                                                                                                        574627 proteins indexed in 112.6s  (12 threads)
+
+    [3/4] Loading peptides...
+    INFO: loaded 2 peptides
+    2 peptides
+
+    [4/4] Mapping (12 threads)...
+    Mapping: [00:00:00 ████████████████████████████████████████ 2/2]                                                                                                                                                                
+    ===============================================================
+    Output  : pep2Q9UPZ3.pep.tsv
+    Mapping : 0.00s  |  Total: 112.60s
+
+    ─────────────────────────────────────────
+    Peptides submitted : 2
+    Mapped             : 2 (100.0%)
+    unique            : 2
+    shared (>1 prot.) : 0
+    cross-proteome    : 0
+    Unmapped           : 0
+    ─────────────────────────────────────────
+
+    Peptide -> Protein -> Species  (top 20 by total peptides)
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    Homo sapiens                                       2         0         2   100.0         1     20431
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+
+    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
+    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+
+cat pep2Q9UPZ3.pep.tsv 
+    peptide_id      sequence        protein_acc     protein_name    proteome_id     start   end     score   mismatches      status
+    pep_0   PELRGDEQSCEEDVSSDTCPK   Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta     570     590     1.0000  0       unique
+    pep_1   PEQMYVSSEHK     Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta     112     122     1.0000  0       unique
 ```
 
 ## Plan @claude-code
