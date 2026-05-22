@@ -2195,24 +2195,12 @@ pub struct RunProtArgs {
     /// Output TSV (default: <peptides_stem>.pep.tsv)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// k-mer seed size (default 5 for proteins; 20^5 = 3.2M unique k-mers)
-    #[arg(short, long, default_value = "5")]
-    k: usize,
-    /// Minimum alignment score 0.0–1.0
-    #[arg(long, default_value = "0.7")]
-    min_score: f64,
-    /// Max mismatches in k-mer seed for fuzzy search (0 = exact only)
+    /// Max mismatches allowed per peptide (0 = exact match only)
     #[arg(long, default_value = "0")]
     fuzzy_mismatches: usize,
     /// Number of parallel threads (default: all logical CPUs)
     #[arg(short = 'j', long)]
     threads: Option<usize>,
-
-    /// Use sliding-window (overlapping subsequence) mode instead of tryptic filtering.
-    /// In sliding mode every FM-index hit is accepted regardless of flanking residues.
-    #[arg(long)]
-    sliding: bool,
-
     /// Force re-download if proteome is a UPID
     #[arg(long)]
     force: bool,
@@ -2240,11 +2228,11 @@ fn parse_uniprot_header(header: &str) -> (String, String, String, String) {
 
 fn resolve_prot_fasta(proteome: &str, force: bool) -> Result<PathBuf, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let cache = PathBuf::from(&home).join(".cache").join("bit-pop").join("proteomes");
+    let cache = PathBuf::from(&home).join(".cache").join("bit-pep").join("proteomes");
     match proteome {
-        "sprot"    => { let p = cache.join("uniprot_sprot.fasta");          if p.exists() { return Ok(p); } return Err(format!("sprot not cached — run: bit-pop fetch-bulk --db sprot")); }
-        "trembl"   => { let p = cache.join("uniprot_trembl.fasta");         if p.exists() { return Ok(p); } return Err(format!("trembl not cached — run: bit-pop fetch-bulk --db trembl")); }
-        "isoforms" => { let p = cache.join("uniprot_sprot_varsplic.fasta"); if p.exists() { return Ok(p); } return Err(format!("isoforms not cached — run: bit-pop fetch-bulk --db isoforms")); }
+        "sprot"    => { let p = cache.join("uniprot_sprot.fasta");          if p.exists() { return Ok(p); } return Err(format!("sprot not cached — run: bit-pep fetch-bulk --db sprot")); }
+        "trembl"   => { let p = cache.join("uniprot_trembl.fasta");         if p.exists() { return Ok(p); } return Err(format!("trembl not cached — run: bit-pep fetch-bulk --db trembl")); }
+        "isoforms" => { let p = cache.join("uniprot_sprot_varsplic.fasta"); if p.exists() { return Ok(p); } return Err(format!("isoforms not cached — run: bit-pep fetch-bulk --db isoforms")); }
         _ => {}
     }
     let local = PathBuf::from(proteome);
@@ -2254,7 +2242,7 @@ fn resolve_prot_fasta(proteome: &str, force: bool) -> Result<PathBuf, String> {
         if !force && dest.exists() && std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) > 1000 {
             return Ok(dest);
         }
-        return Err(format!("Proteome {} not cached — run: bit-pop fetch-proteome --proteome {}", proteome, proteome));
+        return Err(format!("Proteome {} not cached — run: bit-pep fetch-proteome --proteome {}", proteome, proteome));
     }
     Err(format!("Cannot resolve '{}': not a local file, UPID, or bulk keyword", proteome))
 }
@@ -2274,7 +2262,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     }
 
     let t0 = Instant::now();
-    println!("Bit-Pop RunProt  (FM-index parallel peptide->proteome search)");
+    println!("bit-pep RunProt  (FM-index parallel peptide->proteome search)");
     println!("===============================================================");
 
     // [1/4] Locate FASTA
@@ -2284,21 +2272,15 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         std::fs::metadata(&fasta_path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0);
 
     // [2/4] Build FM-index
-    println!("\n[2/4] Indexing proteins (k={})...", args.k);
     let t1 = Instant::now();
-    let mut bp = bit_pop::BitPop::new(args.k);
+    let mut bp = bit_pop::BitPop::new(5);   // k=5 optimal for protein 5-mers
     bp.set_protein_mode(true);
-    if args.fuzzy_mismatches > 0 {
-        bp.set_fuzzy_method(bit_pop::FuzzyMethod::FuzzyKmer);
-        bp.set_fuzzy_mismatches(args.fuzzy_mismatches);
-    }
 
     let seqs = bit_pop::fasta::read_all_sequences(fasta_path.to_str().unwrap())
         .map_err(|e| format!("Cannot read FASTA: {}", e))?;
 
-    // genome_id -> (acc, protein_name, organism, gene, sequence_uppercase)
-    // sequence stored for tryptic position validation after FM-index hit
-    let mut meta: HashMap<u32, (String, String, String, String, String)> = HashMap::new();
+    // genome_id -> (acc, protein_name, organism, gene, prot_len)
+    let mut meta: HashMap<u32, (String, String, String, String, usize)> = HashMap::new();
 
     let pb = ProgressBar::new(seqs.len() as u64);
     pb.set_style(ProgressStyle::default_bar()
@@ -2306,7 +2288,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     for (header, seq) in &seqs {
         let (acc, pname, org, gene) = parse_uniprot_header(header);
         let gid = bp.add_genome(&acc, seq);
-        meta.insert(gid, (acc, pname, org, gene, seq.to_uppercase()));
+        meta.insert(gid, (acc, pname, org, gene, seq.len()));
         pb.inc(1);
     }
     pb.finish_with_message("loaded");
@@ -2338,44 +2320,24 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         .enumerate()
         .filter_map(|(idx, pep)| {
             pb2.inc(1);
-            if pep.sequence.len() < args.k { return None; }
-
-            let results = bp.map_read_with_mode(
-                &pep.sequence,
-                bit_pop::AlignMode::Xor,
-                0,
-            );
-
             let pep_len = pep.sequence.len();
+            if pep_len < 1 { return None; }
+
+            // FM backward_search: exact O(pep_len) or fuzzy pigeonhole
+            let candidates: Vec<(u32, u64, u32)> = if args.fuzzy_mismatches == 0 {
+                bp.find_peptide_exact(&pep.sequence)
+                    .into_iter().map(|(g, p)| (g, p, 0u32)).collect()
+            } else {
+                bp.find_peptide_fuzzy(&pep.sequence, args.fuzzy_mismatches)
+            };
+
+            if candidates.is_empty() { return None; }
+
             let mut hits: Vec<PepHit> = Vec::new();
-
-            for r in results {
-                if r.score < args.min_score { continue; }
-
-                let pos0 = r.position as usize;  // 0-based
-
-                // Validate hit: tryptic mode (default) or sliding-window mode (--sliding).
-                //
-                // Tryptic rules (mirrors make_test_peptides.py exactly):
-                //   N-term: pos0 > 0 AND prot[pos0-1] in {K,R} AND prot[pos0] != P
-                //   C-term: end0 < len AND prot[end0-1] in {K,R} AND prot[end0] != P
-                //
-                // Sliding mode: accept every hit regardless of flanking residues.
-                if !args.sliding {
-                    let valid = if let Some(m) = meta.get(&r.genome_id) {
-                        let prot = m.4.as_bytes();
-                        let end0 = pos0 + pep_len;
-                        end0 < prot.len()
-                            && pos0 > 0
-                            && matches!(prot[pos0 - 1], b'K' | b'R')
-                            && prot[pos0] != b'P'
-                            && matches!(prot[end0 - 1], b'K' | b'R')
-                            && prot[end0] != b'P'
-                    } else { false };
-                    if !valid { continue; }
-                }
-
-                let (acc, pname, org, gene, _) = meta.get(&r.genome_id)
+            for (genome_id, pos0_u64, mismatches) in candidates {
+                let pos0  = pos0_u64 as usize;
+                let score = (pep_len - mismatches as usize) as f32 / pep_len as f32;
+                let (acc, pname, org, gene, _) = meta.get(&genome_id)
                     .cloned().unwrap_or_default();
                 hits.push(PepHit {
                     peptide_id:   pep.id.clone(),
@@ -2385,8 +2347,8 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
                     proteome_id:  args.proteome.clone(),
                     start:        pos0 + 1,
                     end:          pos0 + pep_len,
-                    score:        r.score as f32,
-                    mismatches:   r.cigar.split('X').count().saturating_sub(1) as u32,
+                    score,
+                    mismatches,
                     status:       HitStatus::Unmapped,
                 });
             }
@@ -2404,7 +2366,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         assign_status(&mut hits);
         all_hits.extend(hits);
     }
-    // Unmapped rows for peptides with no tryptic hit
+    // Unmapped rows for peptides with no hit
     for (idx, pep) in peptides.iter().enumerate() {
         if !mapped.contains(&idx) {
             all_hits.push(PepHit {
@@ -2430,25 +2392,97 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         t2.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
     print_summary(&all_hits, peptides.len());
 
-    // Per-organism peptide count
-    let mut by_org: std::collections::BTreeMap<String, std::collections::HashSet<String>> =
-        std::collections::BTreeMap::new();
-    for h in &all_hits {
-        if h.status != HitStatus::Unmapped {
-            let org = h.protein_name.split("] ").last().unwrap_or("").trim().to_string();
-            by_org.entry(org).or_default().insert(h.peptide_id.clone());
+
+    // Per-species summary -- O(n) single pass, no position tracking
+    {
+        struct S {
+            unique_peps:  std::collections::HashSet<String>,
+            shared_peps:  std::collections::HashSet<String>,
+            proteins_hit: std::collections::HashSet<String>,
         }
-    }
-    if !by_org.is_empty() {
-        println!("\nPeptides by organism:");
-        println!("  {:<45} {:>8}", "Organism", "Peptides");
-        println!("  {}", "-".repeat(55));
-        let mut rows: Vec<_> = by_org.iter().collect();
-        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.len()));
-        for (org, peps) in rows.iter().take(20) {
-            println!("  {:<45} {:>8}", org, peps.len());
+        impl S {
+            fn new() -> Self {
+                Self {
+                    unique_peps:  std::collections::HashSet::new(),
+                    shared_peps:  std::collections::HashSet::new(),
+                    proteins_hit: std::collections::HashSet::new(),
+                }
+            }
         }
-        if rows.len() > 20 { println!("  ... and {} more", rows.len() - 20); }
+
+        // total proteins per organism from meta (O(proteins))
+        let mut org_total_prots: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (_, (_, _, org, _, _)) in meta.iter() {
+            *org_total_prots.entry(org.clone()).or_insert(0) += 1;
+        }
+
+        // single pass over hits (O(hits))
+        let mut by_org: std::collections::HashMap<String, S> =
+            std::collections::HashMap::new();
+        for h in &all_hits {
+            if h.status == HitStatus::Unmapped { continue; }
+            let org = h.protein_name.split("] ").last()
+                .unwrap_or("").trim().to_string();
+            let s = by_org.entry(org).or_insert_with(S::new);
+            match h.status {
+                HitStatus::Unique => { s.unique_peps.insert(h.peptide_id.clone()); }
+                HitStatus::Shared => { s.shared_peps.insert(h.peptide_id.clone()); }
+                _ => {}
+            }
+            s.proteins_hit.insert(h.protein_acc.clone());
+        }
+
+        if !by_org.is_empty() {
+            let total_submitted = peptides.len() as f64;
+            let ow = 42usize;
+            let nw = 8usize;
+            let pw = 6usize;
+            let rw = 8usize;
+            let sep = format!(
+                "  {:-<ow$}  {:-<nw$}  {:-<nw$}  {:-<nw$}  {:-<pw$}  {:-<rw$}  {:-<rw$}",
+                "","","","","","","",
+                ow=ow, nw=nw, pw=pw, rw=rw);
+
+            println!("
+Peptide -> Protein -> Species  (top 20 by total peptides)");
+            println!("{}", sep);
+            println!(
+                "  {:<ow$}  {:>nw$}  {:>nw$}  {:>nw$}  {:>pw$}  {:>rw$}  {:>rw$}",
+                "Organism",
+                "Unique", "Shared", "Total", "%total",
+                "ProtsHit", "TotalProt",
+                ow=ow, nw=nw, pw=pw, rw=rw);
+            println!("{}", sep);
+
+            let mut rows: Vec<_> = by_org.iter().collect();
+            rows.sort_by_key(|(_, s)| {
+                std::cmp::Reverse(s.unique_peps.len() + s.shared_peps.len())
+            });
+
+            for (org, s) in rows.iter().take(20) {
+                let n_uniq  = s.unique_peps.len();
+                let n_shr   = s.shared_peps.len();
+                let n_tot   = n_uniq + n_shr;
+                let pct     = 100.0 * n_tot as f64 / total_submitted;
+                let n_hit   = s.proteins_hit.len();
+                let n_total = *org_total_prots.get(*org).unwrap_or(&0);
+                let org_tr  = if org.len() > ow {
+                    format!("{}...", &org[..ow-3])
+                } else { org.to_string() };
+                println!(
+                    "  {:<ow$}  {:>nw$}  {:>nw$}  {:>nw$}  {:>pw$.1}  {:>rw$}  {:>rw$}",
+                    org_tr, n_uniq, n_shr, n_tot, pct, n_hit, n_total,
+                    ow=ow, nw=nw, pw=pw, rw=rw);
+            }
+            println!("{}", sep);
+            if rows.len() > 20 {
+                println!("  ... and {} more organisms", rows.len() - 20);
+            }
+            println!();
+            println!("  Unique/Shared/Total = peptide counts; %total = % of all submitted peptides");
+            println!("  ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database");
+        }
     }
     Ok(())
 }

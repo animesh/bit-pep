@@ -2628,6 +2628,65 @@ impl BitPop {
         self.fm_index.as_ref()
     }
 
+    /// Find all exact positions of `peptide` in the index using FM backward_search.
+    /// Returns Vec<(genome_id, 0-based position)>.
+    /// O(pep_len * ALPHABET_SIZE) — much faster than seed-and-extend for exact matching.
+    pub fn find_peptide_exact(&self, peptide: &str) -> Vec<(u32, u64)> {
+        let fm = match &self.fm_index {
+            Some(f) => f,
+            None    => return Vec::new(),
+        };
+        let encoded = encode_sequence_aa(peptide);
+        fm.find_positions(&encoded, usize::MAX)
+    }
+
+    /// Find all positions of `peptide` allowing up to `max_mismatches` substitutions.
+    /// Uses seed-and-extend: split peptide into (max_mismatches+1) non-overlapping seeds,
+    /// each seed must match exactly (pigeonhole), then verify each candidate by byte diff.
+    /// O(n_seeds * n_positions_per_seed * pep_len).
+    pub fn find_peptide_fuzzy(&self, peptide: &str, max_mismatches: usize) -> Vec<(u32, u64, u32)> {
+        let fm = match &self.fm_index {
+            Some(f) => f,
+            None    => return Vec::new(),
+        };
+        let encoded = encode_sequence_aa(peptide);
+        let pep_len = encoded.len();
+        if pep_len == 0 { return Vec::new(); }
+
+        // Pigeonhole: divide into (max_mismatches+1) seeds; at least one must match exactly.
+        let n_seeds  = max_mismatches + 1;
+        let seed_len = (pep_len / n_seeds).max(1);
+
+        let mut candidates: std::collections::HashSet<(u32, u64)> = std::collections::HashSet::new();
+
+        for s in 0..n_seeds {
+            let seed_start = s * seed_len;
+            let seed_end   = ((s + 1) * seed_len).min(pep_len);
+            let seed       = &encoded[seed_start..seed_end];
+            for (genome_id, seed_pos) in fm.find_positions(seed, usize::MAX) {
+                // Reconstruct candidate start of the full peptide
+                if seed_pos < seed_start as u64 { continue; }
+                let cand_start = seed_pos - seed_start as u64;
+                candidates.insert((genome_id, cand_start));
+            }
+        }
+
+        let mut results = Vec::new();
+        for (genome_id, pos0) in candidates {
+            if let Some(genome) = self.genomes.get(&genome_id) {
+                let end = pos0 as usize + pep_len;
+                if end > genome.len() { continue; }
+                let region = &genome[pos0 as usize..end];
+                let mismatches = region.iter().zip(encoded.iter())
+                    .filter(|(a, b)| a != b).count() as u32;
+                if mismatches <= max_mismatches as u32 {
+                    results.push((genome_id, pos0, mismatches));
+                }
+            }
+        }
+        results
+    }
+
     /// Create a BitPop from serialized FM-index data.
     pub fn from_fm_index(
         k: usize,
