@@ -2,7 +2,102 @@
 
 Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) 
 
-## peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) 
+## test with random peptides generated per protein from 10% of uniprot peptides ranging from 5 to 35
+```
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
+python generate_random_peptides.py 
+    Sampled 57455/574551 proteins (10.0%)
+    Generated 57455 peptides from sampled proteins in uniprot_sprot.fasta
+    Wrote peptide FASTA: uniprot_sprot_0.1_5_35_42.fasta
+    Running: cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot_0.1_5_35_42.fasta
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.19s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot_0.1_5_35_42.fasta`
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+
+    [1/4] Resolving proteome...
+    uniprot_sprot.fasta (274.2 MB)
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                               574627 proteins indexed in 117.9s  (12 threads)
+
+    [3/4] Loading peptides...
+    INFO: loaded 57455 peptides
+    57455 peptides
+
+    [4/4] Mapping (12 threads)...
+    Mapping: [00:00:00 ████████████████████████████████████████ 57455/57455]                                                               
+    ===============================================================
+    Output  : uniprot_sprot_0.1_5_35_42.pep.tsv
+    Mapping : 8.30s  |  Total: 126.57s
+
+    ─────────────────────────────────────────
+    Peptides submitted : 57455
+    Mapped             : 57455 (100.0%)
+    unique            : 27572
+    shared (>1 prot.) : 29883
+    cross-proteome    : 0
+    Unmapped           : 0
+    ─────────────────────────────────────────
+
+    Peptide -> Protein -> Species  (top 20 by total peptides)
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    Homo sapiens                                    1100      5217      6317    11.0     12986     20431
+    Mus musculus                                     915      4926      5841    10.2     11099     17252
+    Escherichia coli (strain K12)                    210      4504      4714     8.2      2700      4531
+    Arabidopsis thaliana                            1344      2954      4298     7.5      9277     16418
+    Rattus norvegicus                                346      3698      4044     7.0      5274      8226
+    Escherichia coli O157:H7                          12      3933      3945     6.9      1489      2047
+    Escherichia coli O6:H1 (strain CFT073 /...         6      3730      3736     6.5      1302      1702
+    Shigella flexneri                                 10      3575      3585     6.2      1278      1696
+    Salmonella typhimurium (strain LT2 / SG...        34      3299      3333     5.8      1336      1831
+    Bos taurus                                       312      2951      3263     5.7      3658      6052
+    Escherichia coli O9:H4 (strain HS)                 1      3174      3175     5.5       805       847
+    Escherichia coli O139:H28 (strain E2437...         3      3169      3172     5.5       800       838
+    Shigella sonnei (strain Ss046)                     1      3158      3159     5.5       824       879
+    Escherichia coli (strain ATCC 8739 / DS...         2      3145      3147     5.5       788       822
+    Escherichia coli O6:K15:H31 (strain 536...         2      3112      3114     5.4       834       894
+    Salmonella typhi                                   6      3080      3086     5.4      1077      1349
+    Shigella boydii serotype 4 (strain Sb227)          4      3040      3044     5.3       778       829
+    Escherichia coli (strain SMS-3-5 / SECEC)          2      3013      3015     5.2       759       791
+    Escherichia coli O8 (strain IAI1)                  0      2991      2991     5.2       738       761
+    Escherichia coli (strain 55989 / EAEC)             0      2979      2979     5.2       739       762
+    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    ... and 12424 more organisms
+
+    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
+    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+    Wrote metadata CSV: uniprot_sprot_0.1_5_35_42.metadata.csv
+    Wrote verified report: uniprot_sprot_0.1_5_35_42.verified.txt
+
+cat uniprot_sprot_0.1_5_35_42.verified.txt
+    Total peptides: 57455
+    Verified peptides: 57455
+    Unique peptides: 27548
+    Shared peptides: 29907
+    Missing/mismatched peptides: 0
+
+awk -F ',' '{print $NF}' uniprot_sprot_0.1_5_35_42.metadata.csv | sort | uniq -c
+  29907 shared
+  27548 unique
+      1 verified
+```
+
+### sweep random seeds from 1 to 100 with peptides ranging from 7-30 per protein from ~1/3 (0.33) of uniprot
+
+```
+for seed in $(seq 1 100); do
+  python3 generate_random_peptides.py \
+    --fasta uniprot_sprot.fasta \
+    --min-len 7 \
+    --max-len 30 \
+    --sample-fraction 0.33 \
+    --seed "$seed"
+done
+```
+
+### peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) 
 
 ```
 wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
@@ -69,7 +164,7 @@ cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 12
     ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
 ```
 
-## missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
+### missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
 ```
 wget "https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29" -O human.fasta
 wget https://zenodo.org/records/20344308/files/uniprotkb_proteome_UP000005640_2024_04_18.fasta 
