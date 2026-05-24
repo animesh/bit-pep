@@ -2,72 +2,143 @@
 
 Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) 
 
-## test with random peptides generated per protein from 10% of uniprot peptides ranging from 5 to 35
+## memory restricted to 24GB (-m 24) bit-pep search for long list of peptides [all 6-7 length] over uniprot to fully check for overlapping peptides by [Chopping Proteins to Peptides](https://fuzzylife.substack.com/p/chopping-proteins-to-peptides) 
+
 ```
 wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
 gunzip uniprot_sprot.fasta.gz
+wget https://raw.githubusercontent.com/animesh/scripts/d08e6ffb9c9fdc23f37fd12cdd280966d4c9e46e/pepCleave.pl
+perl pepCleave.pl uniprot_sprot.fasta 6 7
+grep -v "^>" uniprot_sprot.fasta.len6to7.fasta > uniprot_sprot.fasta.len6to7.txt
+wc uniprot_sprot.fasta.len6to7.*
+  246986978  2411497827 23586051901 uniprot_sprot.fasta.len6to7.fasta
+  123493489   123493489   953910896 uniprot_sprot.fasta.len6to7.txt
+  370480467  2534991316 24539962797 total
+cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -m 24
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.15s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -m 24`
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+    Threads : 6 (of 12 logical CPUs)
+    Memory  : 24.0 GB  ->  batch size: 201326592 peptides
+
+    [1/4] Resolving proteome...
+    uniprot_sprot.fasta (274.2 MB)
+
+    [2/4] Indexing proteins...
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                               574627 proteins indexed in 116.1s  (RAM: 3429 MB)
+
+    [3/4]+[4/4] Streaming peptides and mapping (6 threads, batch=201326592)...
+    done -- 123493489 submitted, 123493489 mapped (100.0%), 6428.1s                                                                  
+    ================================================================
+    Output  : uniprot_sprot.fasta.len6to7.pep.tsv
+    Mapping : 6428.11s  |  Total: 6544.22s  |  Peak RAM: 11008 MB
+
+    -----------------------------------------
+    Peptides submitted : 123493489
+    Mapped             : 123493489 (100.0%)
+    unique            : 68690147
+    shared (>1 prot.) : 341954264
+    cross-proteome    : 0
+    Unmapped           : 0
+    -----------------------------------------
+
+    Peptide -> Protein -> Species  (top 20 by total peptides)
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Homo sapiens                             3972913  18633102  22606015    18.3     20427     20431   100.0
+    Mus musculus                             3075452  16358493  19433945    15.7     17251     17252   100.0
+    Arabidopsis thaliana                     4902809   9793502  14696311    11.9     16413     16418   100.0
+    Rattus norvegicus                         780436   7595196   8375632     6.8      8226      8226   100.0
+    Saccharomyces cerevisiae (strain AT...   2114681   3863170   5977851     4.8      6733      6733   100.0
+    Drosophila melanogaster                  1788004   2990340   4778344     3.9      3868      3868   100.0
+    Bos taurus                                639628   4135212   4774840     3.9      6052      6052   100.0
+    Caenorhabditis elegans                   1910678   2801063   4711741     3.8      4499      4499   100.0
+    Schizosaccharomyces pombe (strain 9...   1943759   2766388   4710147     3.8      5129      5129   100.0
+    Dictyostelium discoideum                 1700704   2891397   4592101     3.7      4163      4163   100.0
+    Oryza sativa subsp. japonica              909290   2937931   3847221     3.1      4197      4197   100.0
+    Danio rerio                              1054844   2209411   3264255     2.6      3369      3369   100.0
+    Xenopus laevis                            670087   2530713   3200800     2.6      3514      3514   100.0
+    Escherichia coli (strain K12)             498285   2227726   2726011     2.2      4531      4531   100.0
+    Bacillus subtilis (strain 168)            874821   1540350   2415171     2.0      4191      4191   100.0
+    Gallus gallus                             513067   1742942   2256009     1.8      2313      2314   100.0
+    Pongo abelii                               54298   1897918   1952216     1.6      2218      2218   100.0
+    Mycobacterium tuberculosis (strain ...     97687   1497889   1595576     1.3      2338      2338   100.0
+    Xenopus tropicalis                        281088   1204105   1485193     1.2      1713      1713   100.0
+    Mycobacterium tuberculosis (strain ...      1407   1285584   1286991     1.0      1899      1899   100.0
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    ... and 14821 more organisms
+
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+```
+
+
+## test with random peptides generated per protein from 10% of uniprot peptides ranging from 5 to 35 with bit-pep default using half of logical CPU available
+```
 python generate_random_peptides.py 
     Sampled 57455/574551 proteins (10.0%)
     Generated 57455 peptides from sampled proteins in uniprot_sprot.fasta
     Wrote peptide FASTA: uniprot_sprot_0.1_5_35_42.fasta
     Running: cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot_0.1_5_35_42.fasta
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.19s
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.78s
         Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot_0.1_5_35_42.fasta`
     bit-pep RunProt  (FM-index parallel peptide->proteome search)
     ===============================================================
+    Threads : 6 (of 12 logical CPUs)
+    Memory  : 67.1 GB  ->  batch size: 562943328 peptides
 
     [1/4] Resolving proteome...
     uniprot_sprot.fasta (274.2 MB)
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                               574627 proteins indexed in 117.9s  (12 threads)
 
-    [3/4] Loading peptides...
-    INFO: loaded 57455 peptides
-    57455 peptides
+    [2/4] Indexing proteins...
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                         574627 proteins indexed in 117.1s  (RAM: 3429 MB)
 
-    [4/4] Mapping (12 threads)...
-    Mapping: [00:00:00 ████████████████████████████████████████ 57455/57455]                                                               
-    ===============================================================
+    [3/4]+[4/4] Streaming peptides and mapping (6 threads, batch=562943328)...
+    done -- 57455 submitted, 57455 mapped (100.0%), 10.5s                                                                            
+    ================================================================
     Output  : uniprot_sprot_0.1_5_35_42.pep.tsv
-    Mapping : 8.30s  |  Total: 126.57s
+    Mapping : 10.49s  |  Total: 127.56s  |  Peak RAM: 3465 MB
 
-    ─────────────────────────────────────────
+    -----------------------------------------
     Peptides submitted : 57455
     Mapped             : 57455 (100.0%)
-    unique            : 27572
-    shared (>1 prot.) : 29883
+    unique            : 27748
+    shared (>1 prot.) : 899722
     cross-proteome    : 0
     Unmapped           : 0
-    ─────────────────────────────────────────
+    -----------------------------------------
 
     Peptide -> Protein -> Species  (top 20 by total peptides)
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Homo sapiens                                    1100      5217      6317    11.0     12986     20431
-    Mus musculus                                     915      4926      5841    10.2     11099     17252
-    Escherichia coli (strain K12)                    210      4504      4714     8.2      2700      4531
-    Arabidopsis thaliana                            1344      2954      4298     7.5      9277     16418
-    Rattus norvegicus                                346      3698      4044     7.0      5274      8226
-    Escherichia coli O157:H7                          12      3933      3945     6.9      1489      2047
-    Escherichia coli O6:H1 (strain CFT073 /...         6      3730      3736     6.5      1302      1702
-    Shigella flexneri                                 10      3575      3585     6.2      1278      1696
-    Salmonella typhimurium (strain LT2 / SG...        34      3299      3333     5.8      1336      1831
-    Bos taurus                                       312      2951      3263     5.7      3658      6052
-    Escherichia coli O9:H4 (strain HS)                 1      3174      3175     5.5       805       847
-    Escherichia coli O139:H28 (strain E2437...         3      3169      3172     5.5       800       838
-    Shigella sonnei (strain Ss046)                     1      3158      3159     5.5       824       879
-    Escherichia coli (strain ATCC 8739 / DS...         2      3145      3147     5.5       788       822
-    Escherichia coli O6:K15:H31 (strain 536...         2      3112      3114     5.4       834       894
-    Salmonella typhi                                   6      3080      3086     5.4      1077      1349
-    Shigella boydii serotype 4 (strain Sb227)          4      3040      3044     5.3       778       829
-    Escherichia coli (strain SMS-3-5 / SECEC)          2      3013      3015     5.2       759       791
-    Escherichia coli O8 (strain IAI1)                  0      2991      2991     5.2       738       761
-    Escherichia coli (strain 55989 / EAEC)             0      2979      2979     5.2       739       762
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Homo sapiens                                1100     27065     28165    49.0     12986     20431    63.6
+    Mus musculus                                 925     22524     23449    40.8     11099     17252    64.3
+    Arabidopsis thaliana                        1355     14809     16164    28.1      9277     16418    56.5
+    Rattus norvegicus                            346     10164     10510    18.3      5274      8226    64.1
+    Bos taurus                                   312      6426      6738    11.7      3658      6052    60.4
+    Escherichia coli (strain K12)                210      6217      6427    11.2      2700      4531    59.6
+    Saccharomyces cerevisiae (strain AT...       543      5772      6315    11.0      3554      6733    52.8
+    Oryza sativa subsp. japonica                 273      5747      6020    10.5      2866      4197    68.3
+    Drosophila melanogaster                      314      5682      5996    10.4      2458      3868    63.5
+    Caenorhabditis elegans                       409      4298      4707     8.2      2485      4499    55.2
+    Schizosaccharomyces pombe (strain 9...       467      4191      4658     8.1      2731      5129    53.2
+    Dictyostelium discoideum                     363      4168      4531     7.9      2233      4163    53.6
+    Escherichia coli O157:H7                      12      4511      4523     7.9      1489      2047    72.7
+    Escherichia coli O6:H1 (strain CFT0...         6      4137      4143     7.2      1302      1702    76.5
+    Shigella flexneri                             10      3995      4005     7.0      1278      1696    75.4
+    Salmonella typhimurium (strain LT2 ...        34      3846      3880     6.8      1336      1831    73.0
+    Xenopus laevis                               219      3656      3875     6.7      2102      3514    59.8
+    Danio rerio                                  285      3282      3567     6.2      1964      3369    58.3
+    Salmonella typhi                               6      3400      3406     5.9      1077      1349    79.8
+    Shigella sonnei (strain Ss046)                 1      3348      3349     5.8       824       879    93.7
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
     ... and 12424 more organisms
 
-    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
-    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
     Wrote metadata CSV: uniprot_sprot_0.1_5_35_42.metadata.csv
     Wrote verified report: uniprot_sprot_0.1_5_35_42.verified.txt
 
@@ -84,17 +155,91 @@ awk -F ',' '{print $NF}' uniprot_sprot_0.1_5_35_42.metadata.csv | sort | uniq -c
       1 verified
 ```
 
-### sweep random seeds from 1 to 100 with peptides ranging from 7-30 per protein from ~1/3 (0.33) of uniprot
+### sweep random seeds from 1 to 100 with peptides ranging from 5-35 per protein from ~1/3 (0.33) of uniprot and pops-up [Dictyostelium discoideum](https://en.wikipedia.org/wiki/Dictyostelium_discoideum) seems to possesses a massive number of highly conserved eukaryotic proteins!
 
 ```
-for seed in $(seq 1 100); do
+for seed in $(seq 1 100); do echo $seed;
   python3 generate_random_peptides.py \
     --fasta uniprot_sprot.fasta \
-    --min-len 7 \
-    --max-len 30 \
+    --min-len 5 \
+    --max-len 35 \
     --sample-fraction 0.33 \
     --seed "$seed"
 done
+    #seed 1 
+    #... to 99 not shown
+    100
+    Sampled 189601/574551 proteins (33.0%)
+    Generated 189601 peptides from sampled proteins in uniprot_sprot.fasta
+    Wrote peptide FASTA: uniprot_sprot_0.33_5_35_100.fasta
+    Running: cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot_0.33_5_35_100.fasta
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.02s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot_0.33_5_35_100.fasta`
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+    Threads : 6 (of 12 logical CPUs)
+    Memory  : 67.2 GB  ->  batch size: 563494240 peptides
+
+    [1/4] Resolving proteome...
+    uniprot_sprot.fasta (274.2 MB)
+
+    [2/4] Indexing proteins...
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                         574627 proteins indexed in 118.7s  (RAM: 3429 MB)
+
+    [3/4]+[4/4] Streaming peptides and mapping (6 threads, batch=563494240)...
+    done -- 189601 submitted, 189601 mapped (100.0%), 33.5s                                                                          
+    ================================================================
+    Output  : uniprot_sprot_0.33_5_35_100.pep.tsv
+    Mapping : 33.46s  |  Total: 152.14s  |  Peak RAM: 3533 MB
+
+    -----------------------------------------
+    Peptides submitted : 189601
+    Mapped             : 189601 (100.0%)
+    unique            : 89888
+    shared (>1 prot.) : 3185051
+    cross-proteome    : 0
+    Unmapped           : 0
+    -----------------------------------------
+
+    Peptide -> Protein -> Species  (top 20 by total peptides)
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Dictyostelium discoideum                    1231    130917    132148    69.7      3727      4163    89.5
+    Homo sapiens                                3694     97499    101193    53.4     18988     20431    92.9
+    Mus musculus                                3018     83056     86074    45.4     16143     17252    93.6
+    Arabidopsis thaliana                        4503     53827     58330    30.8     14778     16418    90.0
+    Rattus norvegicus                           1047     37303     38350    20.2      7704      8226    93.7
+    Drosophila melanogaster                     1053     26015     27068    14.3      3574      3868    92.4
+    Saccharomyces cerevisiae (strain AT...      1810     22827     24637    13.0      5821      6733    86.5
+    Bos taurus                                   967     22578     23545    12.4      5563      6052    91.9
+    Oryza sativa subsp. japonica                 879     22351     23230    12.3      4003      4197    95.4
+    Escherichia coli (strain K12)                608     21247     21855    11.5      4046      4531    89.3
+    Caenorhabditis elegans                      1313     15654     16967     8.9      4038      4499    89.8
+    Schizosaccharomyces pombe (strain 9...      1485     14310     15795     8.3      4452      5129    86.8
+    Escherichia coli O157:H7                      29     15411     15440     8.1      1969      2047    96.2
+    Xenopus laevis                               718     13496     14214     7.5      3265      3514    92.9
+    Escherichia coli O6:H1 (strain CFT0...        19     14136     14155     7.5      1645      1702    96.7
+    Shigella flexneri                             30     13636     13666     7.2      1634      1696    96.3
+    Danio rerio                                  922     12370     13292     7.0      3116      3369    92.5
+    Salmonella typhimurium (strain LT2 ...       120     12802     12922     6.8      1755      1831    95.8
+    Escherichia coli O9:H4 (strain HS)             4     11445     11449     6.0       847       847   100.0
+    Escherichia coli O139:H28 (strain E...         8     11372     11380     6.0       838       838   100.0
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    ... and 14225 more organisms
+
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+    Wrote metadata CSV: uniprot_sprot_0.33_5_35_100.metadata.csv
+    Wrote verified report: uniprot_sprot_0.33_5_35_100.verified.txt
+
+cat uniprot_sprot_0.33*veri* | grep ssing | sort | uniq -c
+    100 Missing/mismatched peptides: 0
+
+awk -F ',' '{print $NF}' uniprot_sprot_0.33*.metadata.csv | sort | uniq -c
+9974531 shared
+8985569 unique
+    100 verified
 ```
 
 ### peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) 
@@ -105,63 +250,63 @@ gunzip uniprot_sprot.fasta.gz
 wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
 grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
 cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 12
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.91s
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.84s
         Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt -j 12`
-    Bit-Pop RunProt  (FM-index parallel peptide->proteome search)
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
     ===============================================================
+    Threads : 12 (of 12 logical CPUs)
+    Memory  : 67.5 GB  ->  batch size: 566011616 peptides
 
     [1/4] Resolving proteome...
     uniprot_sprot.fasta (274.2 MB)
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                                                                                                                        574627 proteins indexed in 112.6s  (12 threads)
 
-    [3/4] Loading peptides...
-    INFO: loaded 58920 peptides
-    58920 peptides
+    [2/4] Indexing proteins...
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                         574627 proteins indexed in 119.0s  (RAM: 3429 MB)
 
-    [4/4] Mapping (12 threads)...
-    Mapping: [00:00:00 ████████████████████████████████████████ 58920/58920]                                                                                                                                                        
-    ===============================================================
+    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=566011616)...
+    done -- 58920 submitted, 54626 mapped (92.7%), 3.5s                                                                              
+    ================================================================
     Output  : peptides.pep.tsv
-    Mapping : 1.83s  |  Total: 114.59s
+    Mapping : 3.54s  |  Total: 122.58s  |  Peak RAM: 3435 MB
 
-    ─────────────────────────────────────────
+    -----------------------------------------
     Peptides submitted : 58920
     Mapped             : 54626 (92.7%)
-    unique            : 24989
-    shared (>1 prot.) : 29637
+    unique            : 25225
+    shared (>1 prot.) : 208666
     cross-proteome    : 0
     Unmapped           : 4294
-    ─────────────────────────────────────────
+    -----------------------------------------
 
     Peptide -> Protein -> Species  (top 20 by total peptides)
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Homo sapiens                                   24871     29560     54431    92.4      6852     20431
-    Mus musculus                                      49     23184     23233    39.4      4656     17252
-    Rattus norvegicus                                 18     13398     13416    22.8      2333      8226
-    Bos taurus                                         4      9333      9337    15.8      1651      6052
-    Pongo abelii                                       7      7350      7357    12.5       898      2218
-    Gallus gallus                                      3      3594      3597     6.1       634      2314
-    Macaca fascicularis                                1      3260      3261     5.5       417      1176
-    Sus scrofa                                         0      3158      3158     5.4       439      1462
-    Xenopus laevis                                     0      2679      2679     4.5       752      3514
-    Oryctolagus cuniculus                              1      2606      2607     4.4       348       979
-    Pan troglodytes                                    0      1897      1897     3.2       224       692
-    Canis lupus familiaris                             0      1859      1859     3.2       251       857
-    Danio rerio                                        1      1698      1699     2.9       502      3369
-    Xenopus tropicalis                                 0      1323      1323     2.2       326      1713
-    Drosophila melanogaster                            1      1322      1323     2.2       366      3868
-    Cricetulus griseus                                 0      1317      1317     2.2       105       248
-    Mesocricetus auratus                               0       957       957     1.6       102       277
-    Caenorhabditis elegans                             0       873       873     1.5       294      4499
-    Equus caballus                                     1       678       679     1.2        73       292
-    Arabidopsis thaliana                               1       665       666     1.1       533     16418
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Homo sapiens                               25107     50456     75563   128.2      6852     20431    33.5
+    Mus musculus                                  49     29936     29985    50.9      4656     17252    27.0
+    Rattus norvegicus                             18     16870     16888    28.7      2333      8226    28.4
+    Bos taurus                                     4     12063     12067    20.5      1651      6052    27.3
+    Pongo abelii                                   7      8660      8667    14.7       898      2218    40.5
+    Gallus gallus                                  3      5230      5233     8.9       634      2314    27.4
+    Xenopus laevis                                 0      4372      4372     7.4       752      3514    21.4
+    Sus scrofa                                     0      3933      3933     6.7       439      1462    30.0
+    Macaca fascicularis                            1      3758      3759     6.4       417      1176    35.5
+    Oryctolagus cuniculus                          1      3042      3043     5.2       348       979    35.5
+    Canis lupus familiaris                         0      2356      2356     4.0       251       857    29.3
+    Pan troglodytes                                0      2273      2273     3.9       224       692    32.4
+    Arabidopsis thaliana                           1      2264      2265     3.8       533     16418     3.2
+    Drosophila melanogaster                        1      2206      2207     3.7       366      3868     9.5
+    Danio rerio                                    1      2039      2040     3.5       502      3369    14.9
+    Xenopus tropicalis                             0      1659      1659     2.8       326      1713    19.0
+    Caenorhabditis elegans                         0      1555      1555     2.6       294      4499     6.5
+    Cricetulus griseus                             0      1526      1526     2.6       105       248    42.3
+    Dictyostelium discoideum                       0      1159      1159     2.0       196      4163     4.7
+    Oryza sativa subsp. japonica                   0      1056      1056     1.8       210      4197     5.0
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
     ... and 2663 more organisms
 
-    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
-    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
 ```
 
 ### missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
@@ -172,119 +317,43 @@ cat uniprotkb_proteome_UP000005640_2024_04_18.fasta >> human.fasta
 wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
 grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
 cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12 
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.39s
-     Running `target/debug/bit-pep run-prot human.fasta -p peptides.txt -j 12`
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
+        Running `target/debug/bit-pep run-prot human.fasta -p peptides.txt -j 12`
     bit-pep RunProt  (FM-index parallel peptide->proteome search)
     ===============================================================
+    Threads : 12 (of 12 logical CPUs)
+    Memory  : 67.5 GB  ->  batch size: 565961632 peptides
 
     [1/4] Resolving proteome...
     human.fasta (106.3 MB)
-    Loading: [00:00:07 ████████████████████████████████████████ 210230/210230]                                                                                                                                                        210230 proteins indexed in 46.5s  (12 threads)
 
-    [3/4] Loading peptides...
-    INFO: loaded 58920 peptides
-    58920 peptides
+    [2/4] Indexing proteins...
+    Loading: [00:00:07 ████████████████████████████████████████ 210230/210230]                                                         210230 proteins indexed in 49.2s  (RAM: 1392 MB)
 
-    [4/4] Mapping (12 threads)...
-    Mapping: [00:00:00 ████████████████████████████████████████ 58920/58920]                                                                                                                                                        
-    ===============================================================
+    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=565961632)...
+    done -- 58920 submitted, 58920 mapped (100.0%), 6.7s                                                                             
+    ================================================================
     Output  : peptides.pep.tsv
-    Mapping : 4.70s  |  Total: 51.36s
+    Mapping : 6.70s  |  Total: 55.85s  |  Peak RAM: 1401 MB
 
-    ─────────────────────────────────────────
+    -----------------------------------------
     Peptides submitted : 58920
     Mapped             : 58920 (100.0%)
-    unique            : 11583
-    shared (>1 prot.) : 47337
+    unique            : 23403
+    shared (>1 prot.) : 657336
     cross-proteome    : 0
     Unmapped           : 0
-    ─────────────────────────────────────────
+    -----------------------------------------
 
     Peptide -> Protein -> Species  (top 20 by total peptides)
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Homo sapiens                                   11583     47337     58920   100.0     35721    210230
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Homo sapiens                               23403    657336    680739  1155.4     35721    210230    17.0
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
 
-    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
-    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
-```
-
-
-### check for overlapping peptides by [Chopping Proteins to Peptides](https://fuzzylife.substack.com/p/chopping-proteins-to-peptides)
-
-```
-wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
-gunzip uniprot_sprot.fasta.gz
-wget https://raw.githubusercontent.com/animesh/scripts/d08e6ffb9c9fdc23f37fd12cdd280966d4c9e46e/pepCleave.pl
-perl pepCleave.pl uniprot_sprot.fasta 6 7
-grep -v "^>" uniprot_sprot.fasta.len6to7.fasta > uniprot_sprot.fasta.len6to7.txt
-wc uniprot_sprot.fasta.len6to7.*
-  246986978  2411497827 23586051901 uniprot_sprot.fasta.len6to7.fasta
-  123493489   123493489   953910896 uniprot_sprot.fasta.len6to7.txt
-  370480467  2534991316 24539962797 total
-shuf -n 1000000 uniprot_sprot.fasta.len6to7.txt > uniprot_sprot.fasta.len6to7.1M.txt
-wc uniprot_sprot.fasta.len6to7.1M.txt
-    1000000 1000000 7724587 uniprot_sprot.fasta.len6to7.1M.txt
-cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.1M.txt -j 12 
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.93s
-        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.1M.txt -j 12`
-    bit-pep RunProt  (FM-index parallel peptide->proteome search)
-    ===============================================================
-
-    [1/4] Resolving proteome...
-    uniprot_sprot.fasta (274.2 MB)
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                                                                                                                        574627 proteins indexed in 111.6s  (12 threads)
-
-    [3/4] Loading peptides...
-    INFO: loaded 1000000 peptides
-    1000000 peptides
-
-    [4/4] Mapping (12 threads)...
-    Mapping: [00:00:02 ████████████████████████████████████████ 1000000/1000000]                                                                                                                                                    
-    ===============================================================
-    Output  : uniprot_sprot.fasta.len6to7.1M.pep.tsv
-    Mapping : 28.70s  |  Total: 142.25s
-
-    ─────────────────────────────────────────
-    Peptides submitted : 1000000
-    Mapped             : 1000000 (100.0%)
-    unique            : 555151
-    shared (>1 prot.) : 444849
-    cross-proteome    : 0
-    Unmapped           : 0
-    ─────────────────────────────────────────
-
-    Peptide -> Protein -> Species  (top 20 by total peptides)
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Homo sapiens                                   32014    112950    144964    14.5     19744     20431
-    Mus musculus                                   24876    106637    131513    13.2     16792     17252
-    Arabidopsis thaliana                           39189     54429     93618     9.4     15850     16418
-    Rattus norvegicus                               6352     54232     60584     6.1      7987      8226
-    Saccharomyces cerevisiae (strain ATCC 2...     16969     25417     42386     4.2      6334      6733
-    Caenorhabditis elegans                         15456     20616     36072     3.6      4385      4499
-    Bos taurus                                      5282     30584     35866     3.6      5806      6052
-    Schizosaccharomyces pombe (strain 972 /...     15849     20016     35865     3.6      4950      5129
-    Drosophila melanogaster                        14325     21369     35694     3.6      3759      3868
-    Dictyostelium discoideum                       13770     17937     31707     3.2      3924      4163
-    Oryza sativa subsp. japonica                    7349     18022     25371     2.5      4083      4197
-    Danio rerio                                     8474     16259     24733     2.5      3279      3369
-    Xenopus laevis                                  5299     16559     21858     2.2      3421      3514
-    Escherichia coli (strain K12)                   3961     16827     20788     2.1      4149      4531
-    Bacillus subtilis (strain 168)                  7076     11749     18825     1.9      3865      4191
-    Gallus gallus                                   4101     13011     17112     1.7      2221      2314
-    Pongo abelii                                     479     14992     15471     1.5      2144      2218
-    Mycobacterium tuberculosis (strain ATCC...       787     11260     12047     1.2      2188      2338
-    Xenopus tropicalis                              2245      9345     11590     1.2      1667      1713
-    Mycobacterium tuberculosis (strain CDC ...        11      9846      9857     1.0      1782      1899
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    ... and 14102 more organisms
-
-    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
-    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
 ```
 
 ### confirm position hits by [2 selected peptides](pep2Q9UPZ3.txt) from [Q9UPZ3](https://www.uniprot.org/uniprotkb/Q9UPZ3/entry) [sequences](https://rest.uniprot.org/uniprotkb/Q9UPZ3.fasta)
