@@ -2913,31 +2913,28 @@ impl BitPop {
             .map(|chunk| chunk.to_vec())
             .collect();
 
-        let all_results: Vec<(String, String, Vec<MappingResult>)> = batches
-            .into_par_iter()
-            .flat_map_iter(|batch| {
-                batch
-                    .into_iter()
-                    .map(|(name, seq)| {
-                        let results = self.map_read(seq, context_window);
-                        (name.to_string(), seq.to_string(), results)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        let mut writer = sam::SamWriter::new(output_path)?;
-        writer.write_header(&genome_header)?;
-
-        let mut mapped_count = 0;
-        for (name, seq, results) in &all_results {
-            writer.write_mappings(name, seq, results, &name_refs)?;
-            if !results.is_empty() {
-                mapped_count += 1;
-            }
+        // Stream per batch: map each read, write immediately, discard.
+        // No all_results Vec -- peak RAM = one batch not entire dataset.
+        let writer = std::sync::Mutex::new(sam::SamWriter::new(output_path)?);
+        {
+            let mut w = writer.lock().unwrap();
+            w.write_header(&genome_header)?;
         }
+        let mapped_count = std::sync::atomic::AtomicUsize::new(0);
 
-        Ok(mapped_count)
+        batches.into_par_iter().try_for_each(|batch| -> io::Result<()> {
+            for (name, seq) in batch {
+                let results = self.map_read(seq, context_window);
+                let hit = !results.is_empty();
+                let mut w = writer.lock().unwrap();
+                w.write_mappings(name, seq, &results, &name_refs)?;
+                drop(w); // release lock before next iteration
+                if hit { mapped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            }
+            Ok(())
+        })?;
+
+        Ok(mapped_count.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Map multiple reads and write results to a SAM file.
@@ -3031,50 +3028,69 @@ impl BitPop {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Mutex;
 
-        let genomes_owned: Vec<(String, usize)> = (0..self.genome_count() as u32)
-            .filter_map(|gid| {
-                self.genome_name(gid)
-                    .map(|name| (name.to_string(), self.genome_seq_len(gid).unwrap_or(0)))
-            })
+        // Build owned genome data for the writer thread ('static bound)
+        let genome_names_owned: Vec<String> = (0..self.genome_count() as u32)
+            .filter_map(|gid| self.genome_name(gid).map(|n| n.to_string()))
+            .collect();
+        let genome_header_owned: Vec<(String, usize)> = (0..self.genome_count() as u32)
+            .filter_map(|gid| self.genome_name(gid)
+                .map(|n| (n.to_string(), self.genome_seq_len(gid).unwrap_or(0))))
             .collect();
 
-        let genome_name_refs: Vec<&str> = genomes_owned.iter().map(|(n, _)| n.as_str()).collect();
-        let genome_header: Vec<(&str, usize)> = genomes_owned
-            .iter()
-            .map(|(n, l)| (n.as_str(), *l))
-            .collect();
+        // name_refs for par_iter workers (borrows genome_names_owned -- same lifetime)
+        let _name_refs: Vec<&str> = genome_names_owned.iter().map(|s| s.as_str()).collect();
 
-        let name_refs: Vec<&str> = genome_name_refs.clone();
         let completed = AtomicUsize::new(0);
         let progress_callback = Mutex::new(on_progress);
         let total = reads.len();
 
-        let mapped: Vec<(String, String, Vec<MappingResult>)> = reads
-            .par_iter()
-            .map(|(name, seq)| {
-                let results = self.map_read(seq, context_window);
-                let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                if count.is_multiple_of(progress_interval) || count == total {
-                    if let Ok(mut cb) = progress_callback.lock() {
-                        cb(count, total);
-                    }
-                }
-                (name.to_string(), seq.to_string(), results)
-            })
-            .collect();
+        // Channel-based streaming: workers send results in index order,
+        // writer thread drains in order -- no full materialization, deterministic output.
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::sync_channel::<(usize, String, String, Vec<MappingResult>)>(256);
 
+        // Writer thread owns all genome data (satisfies 'static)
         let mut writer = sam::SamWriter::new(output_path)?;
-        writer.write_header(&genome_header)?;
-
-        let mut mapped_count = 0;
-        for (name, seq, results) in &mapped {
-            writer.write_mappings(name, seq, results, &name_refs)?;
-            if !results.is_empty() {
-                mapped_count += 1;
+        let header_refs: Vec<(&str, usize)> = genome_header_owned
+            .iter().map(|(n, l)| (n.as_str(), *l)).collect();
+        writer.write_header(&header_refs)?;
+        let name_refs_owned: Vec<String> = genome_names_owned.clone();
+        let write_thread = std::thread::spawn(move || -> io::Result<usize> {
+            // Reorder buffer: index -> (name, seq, results)
+            let mut pending: std::collections::BTreeMap<usize, (String, String, Vec<MappingResult>)>
+                = std::collections::BTreeMap::new();
+            let mut next_idx: usize = 0;
+            let mut mapped_count = 0usize;
+            for (idx, name, seq, results) in rx {
+                pending.insert(idx, (name, seq, results));
+                while let Some((n, s, r)) = pending.remove(&next_idx) {
+                    let nr: Vec<&str> = name_refs_owned.iter().map(|s| s.as_str()).collect();
+                    writer.write_mappings(&n, &s, &r, &nr)?;
+                    if !r.is_empty() { mapped_count += 1; }
+                    next_idx += 1;
+                }
             }
-        }
+            // Flush remaining
+            let nr: Vec<&str> = name_refs_owned.iter().map(|s| s.as_str()).collect();
+            for (_, (n, s, r)) in pending {
+                writer.write_mappings(&n, &s, &r, &nr)?;
+                if !r.is_empty() { mapped_count += 1; }
+            }
+            Ok(mapped_count)
+        });
 
-        Ok(mapped_count)
+        reads.par_iter().enumerate().for_each(|(idx, (name, seq))| {
+            let results = self.map_read(seq, context_window);
+            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if count.is_multiple_of(progress_interval) || count == total {
+                if let Ok(mut cb) = progress_callback.lock() { cb(count, total); }
+            }
+            let _ = tx.send((idx, name.to_string(), seq.to_string(), results));
+        });
+        drop(tx); // signal writer thread to finish
+
+        write_thread.join().map_err(|_| io::Error::new(io::ErrorKind::Other, "writer thread panicked"))?
+
     }
 
     // --- Paired-end mapping ---
@@ -3142,9 +3158,9 @@ impl BitPop {
             .collect();
 
         // Collect insert size stats from all pairs first
-        let mut insert_stats = InsertSizeStats::new();
+        // Fixed: was sequential despite fn name; insert_stats was overwriting not accumulating
         let mapped_pairs: Vec<PairedMappingResult> = pairs
-            .iter()
+            .par_iter()
             .map(|(name, seq1, qual1, seq2, qual2)| {
                 let paired = PairedRead {
                     name: name.clone(),
@@ -3153,13 +3169,11 @@ impl BitPop {
                     read2_seq: seq2.clone(),
                     read2_qual: qual2.clone(),
                 };
-                let result = self.map_read_paired(&paired, context_window);
-                insert_stats.count = result.insert_size_stats.count;
-                insert_stats.mean = result.insert_size_stats.mean;
-                insert_stats.stddev = result.insert_size_stats.stddev;
-                result
+                self.map_read_paired(&paired, context_window)
             })
             .collect();
+        let mut insert_stats = InsertSizeStats::new();
+        for p in &mapped_pairs { if p.tlen > 0 { insert_stats.update(p.tlen); } }
 
         let mut writer = sam::SamWriter::new(output_path)?;
         writer.write_header(&genome_header)?;

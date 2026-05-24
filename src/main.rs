@@ -628,7 +628,7 @@ fn cmd_map(args: &MapArgs, verbose: bool) {
 
     // Check for paired-end mode
     if let (Some(r1_path), Some(r2_path)) = (&args.reads_1, &args.reads_2) {
-        cmd_map_paired(&bp, r1_path, r2_path, &args.output, args.min_quality);
+        cmd_map_paired(&bp, r1_path, r2_path, &args.output, args.min_quality, align_mode, args.top_n);
         return;
     }
 
@@ -885,7 +885,7 @@ fn cmd_map(args: &MapArgs, verbose: bool) {
     println!("  Total time: {:.2}s", elapsed.as_secs_f64());
 }
 
-fn cmd_map_paired(bp: &BitPop, r1_path: &Path, r2_path: &Path, output: &Path, min_quality: u8) {
+fn cmd_map_paired(bp: &BitPop, r1_path: &Path, r2_path: &Path, output: &Path, min_quality: u8, _align_mode: AlignMode, top_n: usize) {
     let map_start = Instant::now();
 
     println!("Paired-end mapping mode");
@@ -915,7 +915,7 @@ fn cmd_map_paired(bp: &BitPop, r1_path: &Path, r2_path: &Path, output: &Path, mi
 
     let mapped_count = if min_quality > 0 {
         let result = bp
-            .map_paired_reads_parallel_quality(&pairs, output.to_str().unwrap(), min_quality, 50)
+            .map_paired_reads_parallel_quality(&pairs, output.to_str().unwrap(), min_quality, top_n)
             .unwrap_or(0);
 
         pb.set_position(total_pairs as u64);
@@ -924,7 +924,7 @@ fn cmd_map_paired(bp: &BitPop, r1_path: &Path, r2_path: &Path, output: &Path, mi
         result
     } else {
         let result = bp
-            .map_paired_reads_parallel(&pairs, output.to_str().unwrap(), 50)
+            .map_paired_reads_parallel(&pairs, output.to_str().unwrap(), top_n)
             .unwrap_or(0);
 
         pb.set_position(total_pairs as u64);
@@ -1290,7 +1290,7 @@ async fn cmd_fetch(args: &FetchArgs, _verbose: bool) -> Result<(), String> {
             }
         }
     } else {
-        println!("\nFASTQ-only mode: {} genomes cached", genomes.len());
+        println!("\nFASTA-only mode: {} genomes cached", genomes.len());
         if !failed.is_empty() {
             println!("  Failed: {}", failed.join(", "));
         }
@@ -1382,13 +1382,6 @@ async fn cmd_update(args: &UpdateArgs, _verbose: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    hasher.update(&data);
-    Ok(format!("{:x}", hasher.finalize()))
-}
 
 fn default_output_path(reads_path: &Path) -> PathBuf {
     let stem = reads_path.file_stem().unwrap_or_default();
@@ -1418,7 +1411,7 @@ fn find_or_build_index(
         let index_path = genome_path.with_extension("bitpop");
 
         if !force && index_path.exists() {
-            let _genome_hash = sha256_file(genome_path)?;
+            // Cache validity: mtime check only (SHA256 removed -- cost without benefit)
             let meta = std::fs::metadata(&index_path).map_err(|e| e.to_string())?;
             let index_mtime = meta.modified().map_err(|e| e.to_string())?;
             let genome_mtime = std::fs::metadata(genome_path)
@@ -1764,7 +1757,7 @@ async fn cmd_run(args: &RunArgs) -> Result<(), String> {
             result
         };
 
-        // Parse SAM for results
+        // TODO: accumulate genome_counts during mapping to avoid SAM reparse
         let genome_counts = parse_sam_summary(&output_path);
         let total = genome_counts.values().sum::<usize>();
 
@@ -1910,6 +1903,7 @@ async fn cmd_run(args: &RunArgs) -> Result<(), String> {
         println!("  Output:     {}", output_path.display());
 
         if mapped_count > 0 {
+            // TODO: accumulate genome_counts during mapping to avoid SAM reparse
             let genome_counts = parse_sam_summary(output_path);
             let total = genome_counts.values().sum::<usize>();
             println!("\n  Results:");
@@ -2480,9 +2474,10 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
             }).collect();
             assign_status(&mut hits);
 
-            // Update counters
+            // Update counters per-peptide (not per-hit)
+            // assign_status sets same status on all hits for a peptide
             mapped_ctr.fetch_add(1, Ordering::Relaxed);
-            for h in &hits {
+            if let Some(h) = hits.first() {
                 match h.status {
                     HitStatus::Unique => { unique_ctr.fetch_add(1, Ordering::Relaxed); }
                     HitStatus::Shared => { shared_ctr.fetch_add(1, Ordering::Relaxed); }

@@ -1,9 +1,187 @@
 # Bit-Pep: Multi-Proteome Peptide Classification
 
-Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) and Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) 
+Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) to Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) , running it is simple as installing cargo/rust `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, adding to the path, for bash/ubuntu `source $HOME/.bashrc` and running `cargo run --bin bit-pep -- run-prot <proteome in fasta format> -p <peptides list one per line in txt or fasta format> -j <number of CPU to use> -m <RAM in GB>` for example to map peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) using 2 CPU (-j 2) and 4GB RAM (-m 2)
 
-## memory restricted to 24GB (-m 24) bit-pep search for long list of peptides [all 6-7 length] over uniprot to fully check for overlapping peptides by [Chopping Proteins to Peptides](https://fuzzylife.substack.com/p/chopping-proteins-to-peptides) 
+```
+# install cargo/rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# update path 
+source $HOME/.bashrc
+# run bit-pep
+cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 2 -m 4
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s
+     Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt -j 2 -m 4`
+bit-pep RunProt  (FM-index parallel peptide->proteome search)
+===============================================================
+  Threads : 2 (of 2 logical CPUs)
+  Memory  : 4.0 GB  ->  batch size: 33554432 peptides
 
+[1/4] Resolving proteome...
+  uniprot_sprot.fasta (274.2 MB)
+
+[2/4] Indexing proteins...
+  Loading: [00:00:18 ████████████████████████████████████████ 574627/574627]                                          574627 proteins indexed in 75.0s  (RAM: 3430 MB)
+
+[3/4]+[4/4] Streaming peptides and mapping (2 threads, batch=33554432)...
+  done -- 58920 submitted, 54626 mapped (92.7%), 3.1s                                                               
+================================================================
+  Output  : peptides.pep.tsv
+  Mapping : 3.09s  |  Total: 78.12s  |  Peak RAM: 3434 MB
+
+-----------------------------------------
+Peptides submitted : 58920
+Mapped             : 54626 (92.7%)
+  unique            : 25225
+  shared (>1 prot.) : 208666
+  cross-proteome    : 0
+Unmapped           : 4294
+-----------------------------------------
+
+Peptide -> Protein -> Species  (top 20 by total peptides)
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+  Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+  Homo sapiens                               25107     50456     75563   128.2      6852     20431    33.5
+  Mus musculus                                  49     29936     29985    50.9      4656     17252    27.0
+  Rattus norvegicus                             18     16870     16888    28.7      2333      8226    28.4
+  Bos taurus                                     4     12063     12067    20.5      1651      6052    27.3
+  Pongo abelii                                   7      8660      8667    14.7       898      2218    40.5
+  Gallus gallus                                  3      5230      5233     8.9       634      2314    27.4
+  Xenopus laevis                                 0      4372      4372     7.4       752      3514    21.4
+  Sus scrofa                                     0      3933      3933     6.7       439      1462    30.0
+  Macaca fascicularis                            1      3758      3759     6.4       417      1176    35.5
+  Oryctolagus cuniculus                          1      3042      3043     5.2       348       979    35.5
+  Canis lupus familiaris                         0      2356      2356     4.0       251       857    29.3
+  Pan troglodytes                                0      2273      2273     3.9       224       692    32.4
+  Arabidopsis thaliana                           1      2264      2265     3.8       533     16418     3.2
+  Drosophila melanogaster                        1      2206      2207     3.7       366      3868     9.5
+  Danio rerio                                    1      2039      2040     3.5       502      3369    14.9
+  Xenopus tropicalis                             0      1659      1659     2.8       326      1713    19.0
+  Caenorhabditis elegans                         0      1555      1555     2.6       294      4499     6.5
+  Cricetulus griseus                             0      1526      1526     2.6       105       248    42.3
+  Dictyostelium discoideum                       0      1159      1159     2.0       196      4163     4.7
+  Mesocricetus auratus                           0      1056      1056     1.8       102       277    36.8
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+  ... and 2663 more organisms
+
+  Unique/Shared/Total = peptide counts; %total = % of submitted
+  ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+```
+
+notice `4294` peptides are `Unmapped` which is mainly due to missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verified by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
+```
+wget "https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29" -O human.fasta
+wget https://zenodo.org/records/20344308/files/uniprotkb_proteome_UP000005640_2024_04_18.fasta 
+cat uniprotkb_proteome_UP000005640_2024_04_18.fasta >> human.fasta
+wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
+grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
+cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12 
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
+        Running `target/debug/bit-pep run-prot human.fasta -p peptides.txt -j 12`
+    bit-pep RunProt  (FM-index parallel peptide->proteome search)
+    ===============================================================
+    Threads : 12 (of 12 logical CPUs)
+    Memory  : 67.5 GB  ->  batch size: 565961632 peptides
+
+    [1/4] Resolving proteome...
+    human.fasta (106.3 MB)
+
+    [2/4] Indexing proteins...
+    Loading: [00:00:07 ████████████████████████████████████████ 210230/210230]                                                         210230 proteins indexed in 49.2s  (RAM: 1392 MB)
+
+    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=565961632)...
+    done -- 58920 submitted, 58920 mapped (100.0%), 6.7s                                                                             
+    ================================================================
+    Output  : peptides.pep.tsv
+    Mapping : 6.70s  |  Total: 55.85s  |  Peak RAM: 1401 MB
+
+    -----------------------------------------
+    Peptides submitted : 58920
+    Mapped             : 58920 (100.0%)
+    unique            : 23403
+    shared (>1 prot.) : 657336
+    cross-proteome    : 0
+    Unmapped           : 0
+    -----------------------------------------
+
+    Peptide -> Protein -> Species  (top 20 by total peptides)
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+    Homo sapiens                               23403    657336    680739  1155.4     35721    210230    17.0
+    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+
+    Unique/Shared/Total = peptide counts; %total = % of submitted
+    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+```
+
+### position of the hit is written as tab-separated text file in `<proteome>.pep.tsv` 
+
+for example position of hits for [2 selected peptides](https://raw.githubusercontent.com/animesh/bit-pep/refs/heads/master/pep2Q9UPZ3.txt) from [Q9UPZ3](https://www.uniprot.org/uniprotkb/Q9UPZ3/entry) [sequences](https://rest.uniprot.org/uniprotkb/Q9UPZ3.fasta) with an old PERL [code](https://raw.githubusercontent.com/animesh/scripts/079de9ce5a6d408d7508fb276f6ad248c58b99d7/pep2protmap.pl) 
+```
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
+wget https://raw.githubusercontent.com/animesh/scripts/079de9ce5a6d408d7508fb276f6ad248c58b99d7/pep2protmap.pl
+perl pep2protmap.pl uniprot_sprot.fasta pep2Q9UPZ3.txt 1
+
+    Read# 574627 sequences from uniprot_sprot.fasta
+
+    Opening peptide list from pep2Q9UPZ3.txt
+
+    >sp|Q9UPZ3|HPS5_HUMAN   569;
+    >sp|Q9UPZ3|HPS5_HUMAN   111;
+
+    Processed 2 Sequences
+    Found 2 Matches
+
+ cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta  -p pep2Q9UPZ3.txt
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p pep2Q9UPZ3.txt`
+bit-pep RunProt  (FM-index parallel peptide->proteome search)
+===============================================================
+  Threads : 1 (of 2 logical CPUs)
+  Memory  : 1.0 GB  ->  batch size: 8388608 peptides
+
+[1/4] Resolving proteome...
+  uniprot_sprot.fasta (274.2 MB)
+
+[2/4] Indexing proteins...
+  Loading: [00:00:18 ████████████████████████████████████████ 574627/574627]                                          574627 proteins indexed in 75.0s  (RAM: 3429 MB)
+
+[3/4]+[4/4] Streaming peptides and mapping (1 threads, batch=8388608)...
+  done -- 2 submitted, 2 mapped (100.0%), 0.5s                                                                      
+================================================================
+  Output  : pep2Q9UPZ3.pep.tsv
+  Mapping : 0.46s  |  Total: 75.51s  |  Peak RAM: 3429 MB
+
+-----------------------------------------
+Peptides submitted : 2
+Mapped             : 2 (100.0%)
+  unique            : 2
+  shared (>1 prot.) : 0
+  cross-proteome    : 0
+Unmapped           : 0
+-----------------------------------------
+
+Peptide -> Protein -> Species  (top 20 by total peptides)
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+  Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+  Homo sapiens                                   2         0         2   100.0         1     20431     0.0
+  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
+
+  Unique/Shared/Total = peptide counts; %total = % of submitted
+  ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+
+cat pep2Q9UPZ3.pep.tsv 
+    peptide_id      sequence        protein_acc     protein_name    proteome_id     start   end     score   mismatches status
+    p0      PELRGDEQSCEEDVSSDTCPK   Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta 570     590     1.0000  0       unique
+    p1      PEQMYVSSEHK     Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta112      122     1.0000  0       unique
+```
+
+### for large peptide list ~100M
+
+increase memory up to to 24GB (-m 24) otherwise CRASH is iminent, like for [all [6-7](https://en.wikipedia.org/wiki/6-7) lengths] over uniprot to fully check for overlapping peptides by [Chopping Proteins to Peptides](https://fuzzylife.substack.com/p/chopping-proteins-to-peptides), notice the peak mem usage is ~12GB though, maybe it is 6-7 the issue?
 ```
 wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
 gunzip uniprot_sprot.fasta.gz
@@ -14,31 +192,33 @@ wc uniprot_sprot.fasta.len6to7.*
   246986978  2411497827 23586051901 uniprot_sprot.fasta.len6to7.fasta
   123493489   123493489   953910896 uniprot_sprot.fasta.len6to7.txt
   370480467  2534991316 24539962797 total
-cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -m 24
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.15s
-        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -m 24`
+cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -j 12 -m 48
+    Compiling bit-pep v0.2.0 (/mnt/z/Download/bit-pep)
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.61s
+        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.len6to7.txt -j 12 -m 48`
     bit-pep RunProt  (FM-index parallel peptide->proteome search)
     ===============================================================
-    Threads : 6 (of 12 logical CPUs)
-    Memory  : 24.0 GB  ->  batch size: 201326592 peptides
+    Threads : 12 (of 12 logical CPUs)
+    Memory  : 48.0 GB  ->  batch size: 402653184 peptides
 
     [1/4] Resolving proteome...
     uniprot_sprot.fasta (274.2 MB)
 
     [2/4] Indexing proteins...
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                               574627 proteins indexed in 116.1s  (RAM: 3429 MB)
+    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                         574627 proteins indexed in 117.0s  (RAM: 3429 MB)
 
-    [3/4]+[4/4] Streaming peptides and mapping (6 threads, batch=201326592)...
-    done -- 123493489 submitted, 123493489 mapped (100.0%), 6428.1s                                                                  
+    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=402653184)...
+    ⠁ 121000000 searched, 120999999 mapped, RAM 16670 MB, 5886.8s                                                                      
+    done -- 123493489 submitted, 123493489 mapped (100.0%), 6004.8s                                                                  
     ================================================================
     Output  : uniprot_sprot.fasta.len6to7.pep.tsv
-    Mapping : 6428.11s  |  Total: 6544.22s  |  Peak RAM: 11008 MB
+    Mapping : 6004.84s  |  Total: 6121.85s  |  Peak RAM: 11018 MB
 
     -----------------------------------------
     Peptides submitted : 123493489
     Mapped             : 123493489 (100.0%)
-    unique            : 68690147
-    shared (>1 prot.) : 341954264
+    unique            : 68518651
+    shared (>1 prot.) : 54974838
     cross-proteome    : 0
     Unmapped           : 0
     -----------------------------------------
@@ -75,7 +255,7 @@ cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p uniprot_sprot.fasta.l
 ```
 
 
-## test with random peptides generated per protein from 10% of uniprot peptides ranging from 5 to 35 with bit-pep default using half of logical CPU available
+check with random peptides generated per protein from 10% of uniprot peptides ranging from 5 to 35 with bit-pep default using half of logical CPU available
 ```
 python generate_random_peptides.py 
     Sampled 57455/574551 proteins (10.0%)
@@ -155,7 +335,7 @@ awk -F ',' '{print $NF}' uniprot_sprot_0.1_5_35_42.metadata.csv | sort | uniq -c
       1 verified
 ```
 
-### sweep random seeds from 1 to 100 with peptides ranging from 5-35 per protein from ~1/3 (0.33) of uniprot and pops-up [Dictyostelium discoideum](https://en.wikipedia.org/wiki/Dictyostelium_discoideum) seems to possesses a massive number of highly conserved eukaryotic proteins!
+### test sweep random seeds from 1 to 100 with peptides ranging from 5-35 per protein from ~1/3 (0.33) of uniprot and pops-up [Dictyostelium discoideum](https://en.wikipedia.org/wiki/Dictyostelium_discoideum) seems to possesses a massive number of highly conserved eukaryotic proteins!
 
 ```
 for seed in $(seq 1 100); do echo $seed;
@@ -242,805 +422,396 @@ awk -F ',' '{print $NF}' uniprot_sprot_0.33*.metadata.csv | sort | uniq -c
     100 verified
 ```
 
-### peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) 
+# change summary with @copilot
 
-```
-wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
-gunzip uniprot_sprot.fasta.gz
-wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
-grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
-cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 12
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.84s
-        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt -j 12`
-    bit-pep RunProt  (FM-index parallel peptide->proteome search)
-    ===============================================================
-    Threads : 12 (of 12 logical CPUs)
-    Memory  : 67.5 GB  ->  batch size: 566011616 peptides
+## 1. AA encoding
 
-    [1/4] Resolving proteome...
-    uniprot_sprot.fasta (274.2 MB)
-
-    [2/4] Indexing proteins...
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                         574627 proteins indexed in 119.0s  (RAM: 3429 MB)
-
-    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=566011616)...
-    done -- 58920 submitted, 54626 mapped (92.7%), 3.5s                                                                              
-    ================================================================
-    Output  : peptides.pep.tsv
-    Mapping : 3.54s  |  Total: 122.58s  |  Peak RAM: 3435 MB
-
-    -----------------------------------------
-    Peptides submitted : 58920
-    Mapped             : 54626 (92.7%)
-    unique            : 25225
-    shared (>1 prot.) : 208666
-    cross-proteome    : 0
-    Unmapped           : 4294
-    -----------------------------------------
-
-    Peptide -> Protein -> Species  (top 20 by total peptides)
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Homo sapiens                               25107     50456     75563   128.2      6852     20431    33.5
-    Mus musculus                                  49     29936     29985    50.9      4656     17252    27.0
-    Rattus norvegicus                             18     16870     16888    28.7      2333      8226    28.4
-    Bos taurus                                     4     12063     12067    20.5      1651      6052    27.3
-    Pongo abelii                                   7      8660      8667    14.7       898      2218    40.5
-    Gallus gallus                                  3      5230      5233     8.9       634      2314    27.4
-    Xenopus laevis                                 0      4372      4372     7.4       752      3514    21.4
-    Sus scrofa                                     0      3933      3933     6.7       439      1462    30.0
-    Macaca fascicularis                            1      3758      3759     6.4       417      1176    35.5
-    Oryctolagus cuniculus                          1      3042      3043     5.2       348       979    35.5
-    Canis lupus familiaris                         0      2356      2356     4.0       251       857    29.3
-    Pan troglodytes                                0      2273      2273     3.9       224       692    32.4
-    Arabidopsis thaliana                           1      2264      2265     3.8       533     16418     3.2
-    Drosophila melanogaster                        1      2206      2207     3.7       366      3868     9.5
-    Danio rerio                                    1      2039      2040     3.5       502      3369    14.9
-    Xenopus tropicalis                             0      1659      1659     2.8       326      1713    19.0
-    Caenorhabditis elegans                         0      1555      1555     2.6       294      4499     6.5
-    Cricetulus griseus                             0      1526      1526     2.6       105       248    42.3
-    Dictyostelium discoideum                       0      1159      1159     2.0       196      4163     4.7
-    Oryza sativa subsp. japonica                   0      1056      1056     1.8       210      4197     5.0
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    ... and 2663 more organisms
-
-    Unique/Shared/Total = peptide counts; %total = % of submitted
-    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
-```
-
-### missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verify by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
-```
-wget "https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29" -O human.fasta
-wget https://zenodo.org/records/20344308/files/uniprotkb_proteome_UP000005640_2024_04_18.fasta 
-cat uniprotkb_proteome_UP000005640_2024_04_18.fasta >> human.fasta
-wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
-grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
-cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12 
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
-        Running `target/debug/bit-pep run-prot human.fasta -p peptides.txt -j 12`
-    bit-pep RunProt  (FM-index parallel peptide->proteome search)
-    ===============================================================
-    Threads : 12 (of 12 logical CPUs)
-    Memory  : 67.5 GB  ->  batch size: 565961632 peptides
-
-    [1/4] Resolving proteome...
-    human.fasta (106.3 MB)
-
-    [2/4] Indexing proteins...
-    Loading: [00:00:07 ████████████████████████████████████████ 210230/210230]                                                         210230 proteins indexed in 49.2s  (RAM: 1392 MB)
-
-    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=565961632)...
-    done -- 58920 submitted, 58920 mapped (100.0%), 6.7s                                                                             
-    ================================================================
-    Output  : peptides.pep.tsv
-    Mapping : 6.70s  |  Total: 55.85s  |  Peak RAM: 1401 MB
-
-    -----------------------------------------
-    Peptides submitted : 58920
-    Mapped             : 58920 (100.0%)
-    unique            : 23403
-    shared (>1 prot.) : 657336
-    cross-proteome    : 0
-    Unmapped           : 0
-    -----------------------------------------
-
-    Peptide -> Protein -> Species  (top 20 by total peptides)
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Homo sapiens                               23403    657336    680739  1155.4     35721    210230    17.0
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-
-    Unique/Shared/Total = peptide counts; %total = % of submitted
-    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
-```
-
-### confirm position hits by [2 selected peptides](pep2Q9UPZ3.txt) from [Q9UPZ3](https://www.uniprot.org/uniprotkb/Q9UPZ3/entry) [sequences](https://rest.uniprot.org/uniprotkb/Q9UPZ3.fasta)
-```
-wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
-gunzip uniprot_sprot.fasta.gz
-wget https://raw.githubusercontent.com/animesh/scripts/079de9ce5a6d408d7508fb276f6ad248c58b99d7/pep2protmap.pl
-perl pep2protmap.pl uniprot_sprot.fasta pep2Q9UPZ3.txt 1
-
-    Read# 574627 sequences from uniprot_sprot.fasta
-
-    Opening peptide list from pep2Q9UPZ3.txt
-
-    >sp|Q9UPZ3|HPS5_HUMAN   569;
-    >sp|Q9UPZ3|HPS5_HUMAN   111;
-
-    Processed 2 Sequences
-    Found 2 Matches
-
-cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta  -p pep2Q9UPZ3.txt
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.24s
-        Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p pep2Q9UPZ3.txt`
-    bit-pep RunProt  (FM-index parallel peptide->proteome search)
-    ===============================================================
-
-    [1/4] Resolving proteome...
-    uniprot_sprot.fasta (274.2 MB)
-    Loading: [00:00:19 ████████████████████████████████████████ 574627/574627]                                                                                                                                                        574627 proteins indexed in 112.6s  (12 threads)
-
-    [3/4] Loading peptides...
-    INFO: loaded 2 peptides
-    2 peptides
-
-    [4/4] Mapping (12 threads)...
-    Mapping: [00:00:00 ████████████████████████████████████████ 2/2]                                                                                                                                                                
-    ===============================================================
-    Output  : pep2Q9UPZ3.pep.tsv
-    Mapping : 0.00s  |  Total: 112.60s
-
-    ─────────────────────────────────────────
-    Peptides submitted : 2
-    Mapped             : 2 (100.0%)
-    unique            : 2
-    shared (>1 prot.) : 0
-    cross-proteome    : 0
-    Unmapped           : 0
-    ─────────────────────────────────────────
-
-    Peptide -> Protein -> Species  (top 20 by total peptides)
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Organism                                      Unique    Shared     Total  %total  ProtsHit  TotalProt
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-    Homo sapiens                                       2         0         2   100.0         1     20431
-    ------------------------------------------  --------  --------  --------  ------  --------  --------
-
-    Unique/Shared/Total = peptide counts; %total = % of all submitted peptides
-    ProtsHit = proteins with >=1 mapped peptide; TotalProt = proteins in database
-
-cat pep2Q9UPZ3.pep.tsv 
-    peptide_id      sequence        protein_acc     protein_name    proteome_id     start   end     score   mismatches      status
-    pep_0   PELRGDEQSCEEDVSSDTCPK   Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta     570     590     1.0000  0       unique
-    pep_1   PEQMYVSSEHK     Q9UPZ3  HPS5_HUMAN BLOC-2 complex member HPS5 [HPS5] Homo sapiens       uniprot_sprot.fasta     112     122     1.0000  0       unique
-```
-
-## Plan @claude-code
-
-# bit-pop → pepmap: Peptide Search Across Proteomes
-
-Adapts the bit-pop FM-index + multi-reference classifier for peptide-to-protein mapping.
-The FM-index in `fm.rs` is **unchanged** — it operates on `&[u8]`, so encoding amino acids
-as bytes (0–20) makes it alphabet-agnostic. The XOR/SW/Myers alignment pipeline collapses
-to a single exact FM backward search per peptide (O(m), m = peptide length).
-
----
-
-## Files to ADD
-
-### `src/aa.rs` — Amino acid alphabet (replaces 2-bit DNA encoding in lib.rs)
-
+### `src/lib.rs`
 ```rust
-/// Encode a single amino acid character to a byte value 1–20.
-/// Unknown/ambiguous residues are mapped to nearest canonical AA.
-/// Separator '$' maps to 0.
-pub fn encode_aa(c: u8) -> u8 {
-    match c.to_ascii_uppercase() {
-        b'A' => 1,  b'C' => 2,  b'D' => 3,  b'E' => 4,
-        b'F' => 5,  b'G' => 6,  b'H' => 7,  b'I' => 8,
-        b'K' => 9,  b'L' => 10, b'M' => 11, b'N' => 12,
-        b'P' => 13, b'Q' => 14, b'R' => 15, b'S' => 16,
-        b'T' => 17, b'V' => 18, b'W' => 19, b'Y' => 20,
-        b'U' => 11, // selenocysteine → Met (common in UniProt)
-        b'B' => 12, // Asx ambiguity → Asn
-        b'Z' => 14, // Glx ambiguity → Gln
-        b'X' => 1,  // unknown → Ala
-        b'$' => 0,  // separator
-        _    => 0,
-    }
-}
-
-pub fn decode_aa(v: u8) -> char {
-    match v {
-        1  => 'A', 2  => 'C', 3  => 'D', 4  => 'E',
-        5  => 'F', 6  => 'G', 7  => 'H', 8  => 'I',
-        9  => 'K', 10 => 'L', 11 => 'M', 12 => 'N',
-        13 => 'P', 14 => 'Q', 15 => 'R', 16 => 'S',
-        17 => 'T', 18 => 'V', 19 => 'W', 20 => 'Y',
-        _  => '$',
-    }
-}
-
-/// Encode a full protein/peptide string to a Vec<u8> of AA indices.
-pub fn encode_sequence(seq: &str) -> Vec<u8> {
-    seq.bytes().map(encode_aa).collect()
-}
-
-/// Validate that a string looks like a peptide (all standard AA chars).
-pub fn is_valid_peptide(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() >= 5       // discard fragments shorter than 5 aa
-        && s.bytes().all(|c| {
-            matches!(c.to_ascii_uppercase(),
-                b'A'..=b'Z') // broad check; encode_aa handles ambiguous ones
-        })
-}
-```
-
----
-
-### `src/peptide.rs` — Peptide file parser
-
-```rust
-use std::fs;
-use crate::aa::is_valid_peptide;
-
-/// Parse a peptide input file.
-/// Accepts:
-///   - One peptide per line
-///   - Multiple peptides on a line separated by whitespace
-///   - Lines starting with '#' are comments
-///   - Empty lines are skipped
-///
-/// Returns a deduplicated, uppercased Vec of valid peptide strings.
-pub fn parse_peptide_file(path: &str) -> anyhow::Result<Vec<String>> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("Cannot read peptide file {}: {}", path, e))?;
-
-    let mut peptides: Vec<String> = content
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
-        .flat_map(|line| line.split_whitespace())
-        .map(|p| p.to_ascii_uppercase())
-        .filter(|p| is_valid_peptide(p))
-        .collect();
-
-    // Deduplicate while preserving order
-    let mut seen = std::collections::HashSet::new();
-    peptides.retain(|p| seen.insert(p.clone()));
-
-    eprintln!("[peptide] Loaded {} unique peptides from {}", peptides.len(), path);
-    Ok(peptides)
-}
-```
-
----
-
-### `src/uniprot.rs` — UniProt proteome downloader (replaces ncbi.rs)
-
-```rust
-use std::fs;
-use std::path::Path;
-use anyhow::Result;
-
-const UNIPROT_REST: &str = "https://rest.uniprot.org/uniprotkb/search";
-
-/// Download a UniProt reference proteome as FASTA.
-///
-/// `proteome_id` — UniProt proteome ID, e.g. "UP000005640" (human)
-///               — or a taxon name, e.g. "Homo sapiens"
-/// `out_path`    — local path to write the FASTA file
-///
-/// Uses UniProt REST API with cursor-based pagination (500 entries/page).
-pub fn download_proteome(proteome_id: &str, out_path: &str) -> Result<()> {
-    // Detect whether we got a proteome ID (UP*) or an organism name
-    let query = if proteome_id.starts_with("UP") {
-        format!("proteome:{}", proteome_id)
-    } else {
-        format!("proteome:* AND organism_name:{}", proteome_id)
-    };
-
-    eprintln!("[uniprot] Downloading proteome: {} → {}", proteome_id, out_path);
-
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("pepmap/0.1 (proteomics-tool; contact via GitHub)")
-        .build()?;
-
-    let mut all_fasta = String::new();
-    let mut cursor: Option<String> = None;
-    let mut page = 0usize;
-
-    loop {
-        page += 1;
-        let mut req = client.get(UNIPROT_REST)
-            .query(&[
-                ("query",  query.as_str()),
-                ("format", "fasta"),
-                ("size",   "500"),
-            ]);
-
-        if let Some(ref c) = cursor {
-            req = req.query(&[("cursor", c.as_str())]);
-        }
-
-        let resp = req.send()?;
-
-        // Extract next cursor from Link header (UniProt pagination)
-        cursor = resp.headers()
-            .get("link")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| parse_next_cursor(s));
-
-        let body = resp.text()?;
-        if body.trim().is_empty() { break; }
-
-        all_fasta.push_str(&body);
-        eprintln!("[uniprot] Page {} fetched ({} chars total)", page, all_fasta.len());
-
-        if cursor.is_none() { break; }
-    }
-
-    fs::write(out_path, &all_fasta)?;
-    eprintln!("[uniprot] Written {} bytes to {}", all_fasta.len(), out_path);
-    Ok(())
-}
-
-/// Parse 'cursor=XYZ' from a Link: <url?cursor=XYZ>; rel="next" header.
-fn parse_next_cursor(link_header: &str) -> Option<String> {
-    if !link_header.contains("rel=\"next\"") { return None; }
-    link_header.split(',')
-        .find(|part| part.contains("rel=\"next\""))
-        .and_then(|part| {
-            let url = part.split('<').nth(1)?.split('>').next()?;
-            url.split('&')
-               .chain(url.split('?'))
-               .find(|seg| seg.starts_with("cursor="))
-               .map(|seg| seg["cursor=".len()..].to_owned())
-        })
-}
-
-/// List available reference proteomes for an organism name.
-pub fn search_proteomes(organism: &str) -> Result<Vec<(String, String)>> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("pepmap/0.1")
-        .build()?;
-
-    let resp = client.get("https://rest.uniprot.org/proteomes/search")
-        .query(&[
-            ("query",  organism),
-            ("format", "tsv"),
-            ("fields", "upid,organism,protein_count,busco"),
-            ("size",   "10"),
-        ])
-        .send()?
-        .text()?;
-
-    let results: Vec<(String, String)> = resp.lines()
-        .skip(1)  // header row
-        .filter_map(|line| {
-            let mut cols = line.splitn(2, '\t');
-            let upid = cols.next()?.to_owned();
-            let org  = cols.next()?.to_owned();
-            Some((upid, org))
-        })
-        .collect();
-
-    Ok(results)
-}
-```
-
----
-
-### `src/proteome.rs` — Protein FASTA loader with UniProt header parsing
-
-```rust
-use std::fs;
-use crate::aa::encode_sequence;
-
-/// A single protein entry from a UniProt FASTA.
-#[derive(Debug, Clone)]
-pub struct ProteinEntry {
-    pub accession:  String,   // e.g. "P12345"
-    pub entry_name: String,   // e.g. "GENE_HUMAN"
-    pub gene:       String,   // e.g. "GENE"
-    pub organism:   String,   // e.g. "Homo sapiens"
-    pub description: String,  // full description string
-    pub sequence:   String,   // raw AA sequence (uppercase)
-    pub offset:     usize,    // byte offset in concatenated index text
-}
-
-/// Parsed proteome: all proteins + the concatenated encoded sequence
-/// ready for FM-index construction.
-pub struct Proteome {
-    pub name:       String,
-    pub proteins:   Vec<ProteinEntry>,
-    /// Concatenated encoded sequence: proteins joined by '$' (0).
-    /// This is the text handed to the FM-index builder.
-    pub text:       Vec<u8>,
-}
-
-impl Proteome {
-    pub fn from_fasta(path: &str, proteome_name: &str) -> anyhow::Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read FASTA {}: {}", path, e))?;
-
-        let mut proteins: Vec<ProteinEntry> = Vec::new();
-        let mut text: Vec<u8> = Vec::new();
-        let mut current_header: Option<String> = None;
-        let mut current_seq: String = String::new();
-
-        for line in content.lines() {
-            if line.starts_with('>') {
-                if let Some(hdr) = current_header.take() {
-                    let offset = text.len();
-                    let entry = parse_uniprot_header(&hdr, &current_seq, offset);
-                    let encoded = encode_sequence(&current_seq);
-                    text.extend_from_slice(&encoded);
-                    text.push(0u8); // '$' separator
-                    proteins.push(entry);
-                    current_seq.clear();
-                }
-                current_header = Some(line[1..].to_owned());
-            } else {
-                current_seq.push_str(line.trim());
-            }
-        }
-        // Flush last entry
-        if let Some(hdr) = current_header {
-            let offset = text.len();
-            let entry = parse_uniprot_header(&hdr, &current_seq, offset);
-            let encoded = encode_sequence(&current_seq);
-            text.extend_from_slice(&encoded);
-            text.push(0u8);
-            proteins.push(entry);
-        }
-
-        eprintln!("[proteome] {} — {} proteins, {} encoded chars",
-            proteome_name, proteins.len(), text.len());
-
-        Ok(Proteome {
-            name: proteome_name.to_owned(),
-            proteins,
-            text,
-        })
-    }
-
-    /// Given a position in the concatenated text, find which protein it belongs to
-    /// and the offset within that protein.
-    pub fn locate(&self, pos: usize) -> Option<(&ProteinEntry, usize)> {
-        // Binary search: find the protein whose offset <= pos < offset+len+1
-        let idx = self.proteins.partition_point(|p| p.offset <= pos);
-        if idx == 0 { return None; }
-        let protein = &self.proteins[idx - 1];
-        let local_pos = pos - protein.offset;
-        if local_pos < protein.sequence.len() {
-            Some((protein, local_pos))
-        } else {
-            None // hit the separator
-        }
-    }
-}
-
-/// Parse a UniProt FASTA header line (without the leading '>').
-///
-/// Formats handled:
-///   sp|P12345|GENE_HUMAN Description OS=Homo sapiens OX=9606 GN=GENE PE=1 SV=1
-///   tr|A0A000|GENE_HUMAN ...
-///   Any non-UniProt FASTA (e.g. contaminant db): accession = first token
-fn parse_uniprot_header(header: &str, seq: &str, offset: usize) -> ProteinEntry {
-    let mut accession  = String::new();
-    let mut entry_name = String::new();
-    let mut gene       = String::new();
-    let mut organism   = String::new();
-    let mut description = header.to_owned();
-
-    // Try UniProt pipe format
-    let parts: Vec<&str> = header.splitn(3, '|').collect();
-    if parts.len() == 3 && (parts[0] == "sp" || parts[0] == "tr") {
-        accession  = parts[1].to_owned();
-        // third field: "GENE_HUMAN Description OS=..."
-        let rest = parts[2];
-        let space_pos = rest.find(' ').unwrap_or(rest.len());
-        entry_name = rest[..space_pos].to_owned();
-        description = rest[space_pos..].trim().to_owned();
-
-        // Extract OS= field
-        if let Some(os_start) = description.find("OS=") {
-            let os_end = description[os_start..]
-                .find(" OX=").map(|i| os_start + i)
-                .unwrap_or(description.len());
-            organism = description[os_start + 3..os_end].to_owned();
-        }
-
-        // Extract GN= field
-        if let Some(gn_start) = description.find("GN=") {
-            let gn_end = description[gn_start..]
-                .find(' ').map(|i| gn_start + i)
-                .unwrap_or(description.len());
-            gene = description[gn_start + 3..gn_end].to_owned();
-        }
-    } else {
-        // Generic FASTA: first whitespace-delimited token is the accession
-        accession = header.split_whitespace().next().unwrap_or("unknown").to_owned();
-    }
-
-    ProteinEntry {
-        accession,
-        entry_name,
-        gene,
-        organism,
-        description,
-        sequence: seq.to_ascii_uppercase(),
-        offset,
-    }
-}
-```
-
----
-
-### `src/search.rs` — Peptide FM-index search (exact + fuzzy)
-
-```rust
-use crate::aa::encode_sequence;
-use crate::proteome::Proteome;
-// Reuse the existing FmIndex from fm.rs
-use crate::fm::FmIndex;
-
-#[derive(Debug)]
-pub struct PeptideHit {
-    pub peptide:    String,
-    pub accession:  String,
-    pub entry_name: String,
-    pub gene:       String,
-    pub organism:   String,
-    pub proteome:   String,
-    pub position:   usize,   // 0-based position in protein
-    pub match_type: MatchType,
-}
-
-#[derive(Debug)]
-pub enum MatchType {
-    Exact,
-    OneMismatch, // future: fuzzy
-}
-
-/// Search all peptides against all loaded proteomes.
-/// Returns one row per (peptide, hit).
-pub fn search_all(
-    peptides: &[String],
-    proteomes: &[(Proteome, FmIndex)],
-    max_mismatches: u8,
-) -> Vec<PeptideHit> {
-    use rayon::prelude::*;   // reuse existing rayon dependency
-
-    peptides.par_iter().flat_map(|pep| {
-        let encoded = encode_sequence(pep);
-        let mut hits: Vec<PeptideHit> = Vec::new();
-
-        for (proteome, fm) in proteomes {
-            // FM backward search returns a range [lo, hi) of suffix array positions
-            if let Some((lo, hi)) = fm.backward_search(&encoded) {
-                for sa_pos in lo..hi {
-                    let text_pos = fm.sa[sa_pos] as usize;
-                    if let Some((protein, local_pos)) = proteome.locate(text_pos) {
-                        hits.push(PeptideHit {
-                            peptide:    pep.clone(),
-                            accession:  protein.accession.clone(),
-                            entry_name: protein.entry_name.clone(),
-                            gene:       protein.gene.clone(),
-                            organism:   protein.organism.clone(),
-                            proteome:   proteome.name.clone(),
-                            position:   local_pos,
-                            match_type: MatchType::Exact,
-                        });
-                    }
-                }
-            }
-        }
-        hits
+pub fn encode_sequence_aa(seq: &str) -> Vec<u8> {
+    seq.bytes().filter_map(|c| {
+        let code = crate::amino::encode_aa(c);
+        if code >= 1 { Some(code) } else { None }
     }).collect()
 }
+```
 
-/// Write results as TSV to stdout or a file.
-pub fn write_tsv(hits: &[PeptideHit], out_path: Option<&str>) -> anyhow::Result<()> {
-    use std::io::Write;
+### `src/amino.rs`
+```rust
+pub const ALPHA_SIZE: usize = 27;
 
-    let header = "peptide\taccession\tentry\tgene\torganism\tproteome\tposition\tmatch_type\n";
-    let mut out: Box<dyn Write> = match out_path {
-        Some(p) => Box::new(std::fs::File::create(p)?),
-        None    => Box::new(std::io::stdout()),
+pub fn encode_aa(c: u8) -> u8 {
+    match c.to_ascii_uppercase() {
+        b'A' =>  1,
+        b'C' =>  2,
+        b'D' =>  3,
+        b'E' =>  4,
+        b'F' =>  5,
+        b'G' =>  6,
+        b'H' =>  7,
+        b'I' =>  8,
+        b'K' =>  9,
+        b'L' => 10,
+        b'M' => 11,
+        b'N' => 12,
+        b'P' => 13,
+        b'Q' => 14,
+        b'R' => 15,
+        b'S' => 16,
+        b'T' => 17,
+        b'V' => 18,
+        b'W' => 19,
+        b'Y' => 20,
+        b'U' => 21,
+        b'O' => 22,
+        b'B' => 23,
+        b'J' => 24,
+        b'Z' => 25,
+        b'X' => 26,
+        _    => 26,
+    }
+}
+
+pub fn decode_aa(code: u8) -> u8 {
+    match code {
+        1..=20 => AA_ORDER[(code - 1) as usize],
+        21 => b'U',
+        22 => b'O',
+        23 => b'B',
+        24 => b'J',
+        25 => b'Z',
+        _  => b'X',
+    }
+}
+
+pub fn encode_sequence(seq: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(seq.len());
+    for &c in seq {
+        if c == b'*' { break; }
+        out.push(encode_aa(c));
+    }
+    out
+}
+```
+
+## 2. Protein mode flag and accessors
+
+### `src/lib.rs`
+```rust
+protein_mode: bool,  // true = AA encoding, no reverse complement
+```
+
+```rust
+pub fn set_protein_mode(&mut self, v: bool) { self.protein_mode = v; }
+pub fn is_protein_mode(&self) -> bool { self.protein_mode }
+```
+
+## 3. Protein genome loading
+
+### `src/lib.rs`
+```rust
+pub fn add_genome(&mut self, name: &str, sequence: &str) -> u32 {
+    let genome_id = self.genomes.len() as u32;
+    let encoded = if self.protein_mode { encode_sequence_aa(sequence) } else { encode_sequence(sequence) };
+    self.genome_names.insert(genome_id, name.to_string());
+    self.genomes.insert(genome_id, encoded.clone());
+    genome_id
+}
+```
+
+## 4. Read encoding chooses AA in protein mode
+
+### `src/lib.rs`
+```rust
+fn encode_read(&self, read: &str) -> Vec<u8> {
+    if self.protein_mode { encode_sequence_aa(read) } else { encode_sequence(read) }
+}
+```
+
+## 5. No reverse complement for proteins
+
+### `src/lib.rs`
+```rust
+pub fn map_read_with_mode(
+    &self,
+    read: &str,
+    mode: AlignMode,
+    context_window: usize,
+) -> Vec<MappingResult> {
+    let forward_results = self.map_read_orientation(read, mode, context_window, false);
+    if self.protein_mode { return forward_results; }  // proteins have no strand
+    let rc_read = reverse_complement(read);
+    let rc_results = self.map_read_orientation(&rc_read, mode, context_window, true);
+    ...
+}
+```
+
+## 6. Protein-specific scoring and alignment branch
+
+### `src/lib.rs`
+```rust
+if self.protein_mode {
+    let start = position as isize - anchor_read_offset as isize;
+    if start < 0 { continue; }
+    let start = start as usize;
+    let end = start + read_len;
+    if end > genome.len() { continue; }
+    let region = &genome[start..end];
+    if self.fuzzy_mismatches == 0 || matches!(self.fuzzy_method, FuzzyMethod::None) {
+        if region == encoded.as_slice() {
+            let cigar = format!("{}M", read_len);
+            scored.push((genome_id, start as u64, 1.0f64, cigar));
+        }
+    } else {
+        let mismatches = region.iter().zip(encoded.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        if mismatches <= self.fuzzy_mismatches {
+            let score = (read_len - mismatches) as f64 / read_len as f64;
+            let cigar = region.iter().zip(encoded.iter())
+                .map(|(a, b)| if a == b { 'M' } else { 'X' })
+                .collect::<String>();
+            scored.push((genome_id, start as u64, score, cigar));
+        }
+    }
+    continue;
+}
+```
+
+## 7. Protein mode uses all positions and disables subsampling
+
+### `src/lib.rs`
+```rust
+let pos_cap = if self.protein_mode { usize::MAX } else { 500 };
+```
+
+```rust
+let positions: Vec<(u32, u64)> = if self.protein_mode {
+    raw_positions
+} else if raw_positions.len() > 100 {
+    let stride = raw_positions.len() / 100;
+    raw_positions.into_iter().step_by(stride).collect()
+} else {
+    raw_positions
+};
+```
+
+## 8. Protein mode disables k-mer repeat filtering
+
+### `src/lib.rs`
+```rust
+let repeat_thresh = if self.protein_mode { usize::MAX } else { DEFAULT_REPEAT_THRESHOLD };
+```
+
+## 9. Do not truncate protein results
+
+### `src/lib.rs`
+```rust
+if !self.protein_mode {
+    scored.truncate(50);
+}
+```
+
+## 10. Peptide-specific APIs
+
+### `src/lib.rs`
+```rust
+pub fn find_peptide_exact(&self, peptide: &str) -> Vec<(u32, u64)> {
+    let fm = match &self.fm_index {
+        Some(f) => f,
+        None    => return Vec::new(),
     };
-
-    out.write_all(header.as_bytes())?;
-    for h in hits {
-        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
-            h.peptide, h.accession, h.entry_name, h.gene,
-            h.organism, h.proteome, h.position, h.match_type)?;
-    }
-    Ok(())
+    let encoded = encode_sequence_aa(peptide);
+    fm.find_positions(&encoded, usize::MAX)
 }
 ```
 
----
-
-## Files to MODIFY
-
-### `Cargo.toml` — add dependencies
-
-```toml
-[dependencies]
-# existing deps unchanged...
-anyhow   = "1"
-reqwest  = { version = "0.11", features = ["blocking"] }
-# rayon already present
-```
-
----
-
-### `src/main.rs` — add `peptide-search` subcommand
-
-Add this arm to the existing `match` on subcommands. All existing subcommands are **unchanged**.
-
 ```rust
-// NEW subcommand: pepmap
-("peptide-search", Some(sub)) => {
-    let peptide_file = sub.value_of("peptides").unwrap();
-    let fasta_paths: Vec<&str> = sub.values_of("proteome")
-                                    .unwrap().collect();
-    let out_path = sub.value_of("output");
-    let threads  = sub.value_of("threads")
-                      .and_then(|t| t.parse().ok())
-                      .unwrap_or(4usize);
+pub fn find_peptide_fuzzy(&self, peptide: &str, max_mismatches: usize) -> Vec<(u32, u64, u32)> {
+    let fm = match &self.fm_index {
+        Some(f) => f,
+        None    => return Vec::new(),
+    };
+    let encoded = encode_sequence_aa(peptide);
+    let pep_len = encoded.len();
+    if pep_len == 0 { return Vec::new(); }
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_global()?;
+    let n_seeds  = max_mismatches + 1;
+    let seed_len = (pep_len / n_seeds).max(1);
 
-    // Optionally download from UniProt
-    if let Some(upid) = sub.value_of("uniprot") {
-        let local = format!("{}.fasta", upid);
-        uniprot::download_proteome(upid, &local)?;
-        // fasta_paths would then point to `local`
+    let mut candidates: std::collections::HashSet<(u32, u64)> = std::collections::HashSet::new();
+
+    for s in 0..n_seeds {
+        let seed_start = s * seed_len;
+        let seed_end   = ((s + 1) * seed_len).min(pep_len);
+        let seed       = &encoded[seed_start..seed_end];
+        for (genome_id, seed_pos) in fm.find_positions(seed, usize::MAX) {
+            if seed_pos < seed_start as u64 { continue; }
+            let cand_start = seed_pos - seed_start as u64;
+            candidates.insert((genome_id, cand_start));
+        }
     }
 
-    // Load all proteomes and build FM-indexes
-    let proteomes: Vec<(proteome::Proteome, fm::FmIndex)> = fasta_paths
-        .iter()
-        .map(|path| {
-            let name = std::path::Path::new(path)
-                .file_stem().unwrap().to_string_lossy().to_string();
-            let prot = proteome::Proteome::from_fasta(path, &name)
-                .expect("Failed to load proteome");
-            let fm = fm::FmIndex::build(&prot.text); // existing build fn, unchanged
-            (prot, fm)
-        })
-        .collect();
-
-    // Parse peptides
-    let peptides = peptide::parse_peptide_file(peptide_file)?;
-
-    // Search
-    let hits = search::search_all(&peptides, &proteomes, 0);
-    eprintln!("[pepmap] {} hits across {} peptides", hits.len(), peptides.len());
-
-    search::write_tsv(&hits, out_path)?;
+    let mut results = Vec::new();
+    for (genome_id, pos0) in candidates {
+        if let Some(genome) = self.genomes.get(&genome_id) {
+            let end = pos0 as usize + pep_len;
+            if end > genome.len() { continue; }
+            let region = &genome[pos0 as usize..end];
+            let mismatches = region.iter().zip(encoded.iter())
+                .filter(|(a, b)| a != b).count() as u32;
+            if mismatches <= max_mismatches as u32 {
+                results.push((genome_id, pos0, mismatches));
+            }
+        }
+    }
+    results
 }
 ```
 
-Add the subcommand definition in the clap `App`:
+## 11. Protein runtime entry point in `src/main.rs`
 
 ```rust
-.subcommand(
-    App::new("peptide-search")
-        .about("Map peptides to one or more UniProt proteomes")
-        .arg(Arg::new("peptides")
-            .short('p').long("peptides")
-            .value_name("FILE")
-            .help("Peptide list: one per line, or space-separated per line")
-            .required(true))
-        .arg(Arg::new("proteome")
-            .short('f').long("proteome")
-            .value_name("FASTA")
-            .help("Proteome FASTA file(s) (UniProt format)")
-            .multiple_occurrences(true)
-            .required_unless_present("uniprot"))
-        .arg(Arg::new("uniprot")
-            .long("uniprot")
-            .value_name("PROTEOME_ID")
-            .help("UniProt proteome ID to download, e.g. UP000005640"))
-        .arg(Arg::new("output")
-            .short('o').long("output")
-            .value_name("TSV")
-            .help("Output TSV file (default: stdout)"))
-        .arg(Arg::new("threads")
-            .short('t').long("threads")
-            .default_value("4"))
-)
+let mut bp = bit_pop::BitPop::new(5);   // k=5 optimal for protein 5-mers
+bp.set_protein_mode(true);
 ```
 
----
+## 12. UniProt/proteome support in `src/main.rs`
 
-## What does NOT change
+`src/main.rs` includes protein-specific runtime helpers:
+- `parse_uniprot_header(header: &str) -> (String, String, String, String)` parses UniProt FASTA headers into accession, protein name, organism, and gene.
+- `resolve_prot_fasta(proteome: &str, force: bool) -> Result<PathBuf, String>` resolves `sprot`, `trembl`, `isoforms`, local FASTA paths, or cached UniProt proteome IDs.
 
-| File | Status | Reason |
-|---|---|---|
-| `src/fm.rs` | **Unchanged** | Operates on `&[u8]` — alphabet-agnostic |
-| `src/em.rs` | **Unchanged** | EM on abundance vectors — still valid for multi-proteome |
-| `src/align.rs` | **Unused** for exact matching; still available for fuzzy | |
-| `src/sam.rs` | **Unused** for peptide output | New TSV output in `search.rs` |
-| `src/ncbi.rs` | **Unchanged** | DNA classification workflow unaffected |
-| `src/fasta.rs` | **Unchanged** | DNA FASTA still needed for `run/build/map` cmds |
-| All benchmarks, tests | **Unchanged** | Existing test suite unaffected |
+These helpers are used by `cmd_run_prot` to build the protein database and metadata for TSV output.
 
----
+## 13. Protein/peptide integration tests
 
-## Usage
+### `tests/peptide_map_integration.rs`
+- downloads a UniProt proteome via `bit_pop::uniprot::fetch_proteome`
+- parses FASTA headers and sequences
+- encodes proteins with `bit_pop::amino::encode_sequence`
+- digests proteins with trypsin-style cleavage
+- parses peptide input with `bit_pop::peptide_input::parse_peptide_str`
+- exercises peptide uniqueness and valid AA encoding
 
-```bash
-# Build
-cargo build --release
+## 14. Supporting protein-specific modules
 
-# Download human proteome and search
-./target/release/bit-pop peptide-search \
-  --uniprot UP000005640 \
-  -p my_peptides.txt \
-  -o hits.tsv \
-  -t 8
+- `src/peptide_input.rs` — peptide file parsing for protein mode
+- `src/pep_output.rs` — peptide/protein TSV hit reporting and summary status
+- `src/uniprot.rs` — UniProt proteome download/search support and proteome entry display
+- `src/amino.rs` — amino acid alphabet encoding/decoding and packing
 
-# Search against pre-downloaded FASTAs (human + mouse + contaminants)
-./target/release/bit-pop peptide-search \
-  -f human.fasta \
-  -f mouse.fasta \
-  -f contaminants.fasta \
-  -p my_peptides.txt \
-  -o hits.tsv \
-  -t 8
+## 13. Protein runtime entrypoint in `src/main.rs`
+
+The protein mode entry point is the `RunProt` subcommand.
+It:
+- defines `RunProtArgs` for `--peptides`, `--fuzzy-mismatches`, `-j`, `-m`, `--force`
+- resolves a proteome path or UniProt UPID via `resolve_prot_fasta()`
+- builds `BitPop` with `BitPop::new(5)` and calls `bp.set_protein_mode(true)`
+- reads proteins from FASTA and stores metadata (accession, name, organism, gene)
+- streams peptides in batches from the input file
+- uses `bp.find_peptide_exact()` or `bp.find_peptide_fuzzy()` per peptide
+- assembles `PepHit` rows and writes TSV output
+
+## 14. Peptide input parser in `src/peptide_input.rs`
+
+This module supports:
+- plain mode: one peptide per line or space-separated peptides
+- FASTA mode: sequences under `>` headers
+- validation for ASCII amino-acid characters and length
+- stop-codon trimming (`*`)
+- warnings for invalid or too-long sequences
+
+It exposes:
+- `Peptide { id, sequence }`
+- `parse_peptide_file(path)`
+- `parse_peptide_str(input)`
+
+## 15. Peptide TSV output in `src/pep_output.rs`
+
+This module contains:
+- `PepHit` record type with fields `peptide_id`, `sequence`, `protein_acc`, `protein_name`, `proteome_id`, `start`, `end`, `score`, `mismatches`, `status`
+- `HitStatus` enum: `Unique`, `Shared`, `CrossProteome`, `Unmapped`
+- `assign_status(hits)` to classify peptide hits
+- `write_tsv(hits, path)` to write output
+- `print_summary(hits, n_peptides)` for a summary report
+
+## Additional protein-specific references exist in non-runtime file:
+- `src/MIGRATION.md` — migration notes and source-file changes
+
+
+# TBD 
+
+FM-index gives compaction, exact-matching and scalable search and proteins have high alphabet entropy so 5-mer already has strong selectivity: 26^5 \approx 1.19 \times 10^7 so unlike DNA, candidate explosion is naturally limited but but there are many opportunities for improvemements for sure, like 
+* index structure tuning
+* SIMD verification
+* seed strategy
+* memory layout
+* cache efficiency
+* ...?
+## FM-index maybe not beat hash indexing?
+For short exact peptide lookup, FM-index is elegant but may not be fastest because proteins have high entropy, a direct k-mer hash table may outperform FM traversal. For example k=6:26^6 \approx 3.09 \times 10^8 but in practice only a tiny fraction exist in real proteomes. So sparse hash maps become feasible with lookup advantages like :
+* O(1) average lookup
+* very cache friendly
+* simpler mismatch neighborhood expansion
+* easier SIMD integration
+For modern servers with abundant RAM, hash-based indexes often win in throughput. Need to benchmark!
+
+## mismatch verification should become SIMD? 
+```rust id="th0u79"
+zip()
+filter()
+count()
 ```
+For millions of peptides this becomes dominant as we saw less than -m 24 leads to crash and AA we already encode residues into compact integers which is ideal for SIMD. Potential AVX2 approach:
+* load 32 bytes
+* compare vectors
+* movemask
+* popcount mismatches
+* early terminate after >2 mismatches
+... could produce very large speedups? 
 
-### Peptide file formats accepted
-
+## k=5 may not actually be optimal
+currently use:
+```rust id="jlwmv9"
+BitPop::new(5)
 ```
-# Format 1: one per line
-PEPTIDER
-ACDEFGHIKLM
-SAMPLEPEPTIDE
+allowing 1–2 mismatches, fixed k=5 may actually be suboptimal.
+need to empirically benchmark:
+* k=5
+* k=6
+* k=7
+* ... spaced seeds?
 
-# Format 2: space-separated
-PEPTIDER ACDEFGHIKLM
-SAMPLEPEPTIDE ANOTHERSEQ
-
-# Format 3: mixed, with comments
-# MaxQuant output peptides
-PEPTIDER ACDEFGHIKLM
-# tryptic fragments
-SAMPLEPEPTIDE
+## seed-and-extend strategy can improve?
+Current fuzzy search:
+```rust id="jlwmby"
+n_seeds = mismatches + 1
 ```
+maybe better to:
+* spaced seeds
+* entropy-aware seeds
+* rare-seed prioritization
+* ...?
 
-### Output TSV columns
+## deduplication may become bottleneck
+```rust id="vn1y6m"
+HashSet<(u32, u64)>
+```
+is potentially expensive. For high-throughput peptide search:
+* hashing overhead
+* allocator churn
+* poor cache locality
+can dominate sorted vectors + dedup may outperform hashsets substantially, needs benchmarking for sure!
 
-| Column | Example |
-|---|---|
-| peptide | PEPTIDER |
-| accession | P12345 |
-| entry | GENE_HUMAN |
-| gene | GENE |
-| organism | Homo sapiens |
-| proteome | human |
-| position | 42 |
-| match_type | Exact |
+## ambiguous residue handling is probably too permissive
+unknown residues map to X so all unknowns treated equivalently and this may inflate false positives.  Maybe:
+* configurable ambiguity policy
+* penalized ambiguity matching
+* reject high-X queries
+* ...?
 
----
-
-## Key design decisions
-
-1. **FM-index reused as-is** — encoding 20 AA as bytes 1–20 fits inside `u8`; libsais SA construction is byte-array agnostic.
-2. **No alignment step for exact search** — peptides (from MaxQuant etc.) are exact sequences; FM backward search is sufficient and O(m).
-3. **`align.rs` kept available** for future fuzzy matching (e.g. I/L equivalence, deamidation N→D).
-4. **EM post-processing** still applies if a peptide maps to multiple proteomes with ambiguity.
-5. **Reverse complement logic deleted** only from the new peptide path — DNA workflow is untouched.
+## not to mention the biggest missing feature is PTM-aware matching!!
 
 
 ## Availability
