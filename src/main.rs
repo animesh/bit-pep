@@ -2182,7 +2182,7 @@ fn cmd_em(args: &EmArgs) {
 pub struct RunProtArgs {
     /// Proteome source: local FASTA path | UniProt UPID (UP000005640) | sprot | trembl | isoforms
     proteome: String,
-    /// Peptide input file: one per line, space-separated, or FASTA format
+    /// Input TSV file. Peptide sequence must be in column 1; all columns are preserved.
     #[arg(short, long, required = true)]
     peptides: PathBuf,
     /// Output TSV (default: <peptides_stem>.pep.tsv)
@@ -2256,330 +2256,310 @@ fn rss_mb() -> f64 {
 }
 
 pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
-    use bit_pop::pep_output::{assign_status, HitStatus, PepHit};
-    use std::io::Write;
+    use rayon::prelude::*;
+    use std::io::{BufRead, BufReader, Write};
     use std::collections::HashMap;
 
-    // Determine thread count: user arg or half of logical CPUs
     let n_cpus = std::thread::available_parallelism()
-        .map(|n| n.get()).unwrap_or(1);
-    let n_threads = args.threads.unwrap_or((n_cpus / 2).max(1));
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let n_threads = args.threads.unwrap_or(n_cpus.max(1));
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(n_threads)
         .build_global()
         .unwrap_or(());
 
-    // Batch size: use available system RAM minus 8GB headroom by default
-    let mem_gb = args.memory_gb.unwrap_or_else(|| {
-        let avail_kb = std::fs::read_to_string("/proc/meminfo")
-            .unwrap_or_default()
-            .lines()
-            .find(|l| l.starts_with("MemAvailable:"))
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(8 * 1024 * 1024);
-        (avail_kb as f64 / 1_048_576.0 - 8.0).max(1.0)
-    });
-    let mem_bytes = (mem_gb * 1_073_741_824.0) as usize;
-    let bytes_per_pep: usize = 128;
-    let batch_size = (mem_bytes / bytes_per_pep).max(10_000);
-
     let t0 = Instant::now();
-    println!("bit-pep RunProt  (FM-index parallel peptide->proteome search)");
-    println!("===============================================================");
-    println!("  Threads : {} (of {} logical CPUs)", n_threads, n_cpus);
-    println!("  Memory  : {:.1} GB  ->  batch size: {} peptides", mem_gb, batch_size);
 
-    // [1/4] Locate FASTA
+    println!("bit-pep RunProt  (FM-index TSV peptide -> protein mapping)");
+    println!("============================================================");
+    println!("  Threads : {} (of {} logical CPUs)", n_threads, n_cpus);
+
+    // ------------------------------------------------------------------
+    // [1/4] Resolve FASTA
+    // ------------------------------------------------------------------
+
     println!("\n[1/4] Resolving proteome...");
     let fasta_path = resolve_prot_fasta(&args.proteome, args.force)?;
-    println!("  {} ({:.1} MB)", fasta_path.display(),
-        std::fs::metadata(&fasta_path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0);
+    println!(
+        "  {} ({:.1} MB)",
+        fasta_path.display(),
+        std::fs::metadata(&fasta_path)
+            .map(|m| m.len())
+            .unwrap_or(0) as f64 / 1_048_576.0
+    );
 
-    // [2/4] Build FM-index
+    // ------------------------------------------------------------------
+    // [2/4] Build protein FM-index
+    //
+    // Important: the original Perl script treats I and L as equivalent.
+    // We therefore normalize BOTH the FASTA proteins and query peptides
+    // by replacing I -> L before indexing/searching.
+    // ------------------------------------------------------------------
+
     println!("\n[2/4] Indexing proteins...");
     let t1 = Instant::now();
-    let mut bp = bit_pop::BitPop::new(5);   // k=5 optimal for protein 5-mers
+
+    let mut bp = bit_pop::BitPop::new(5);
     bp.set_protein_mode(true);
 
     let seqs = bit_pop::fasta::read_all_sequences(fasta_path.to_str().unwrap())
         .map_err(|e| format!("Cannot read FASTA: {}", e))?;
 
-    // genome_id -> (acc, protein_name, organism, gene, prot_len)
-    let mut meta: HashMap<u32, (String, String, String, String, usize)> = HashMap::new();
+    let mut meta: HashMap<u32, String> = HashMap::with_capacity(seqs.len());
 
     let pb = ProgressBar::new(seqs.len() as u64);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner} Loading: [{elapsed_precise} {bar:40} {pos}/{len}]").unwrap());
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner} Loading: [{elapsed_precise} {bar:40}] {pos}/{len}")
+            .unwrap(),
+    );
+
     for (header, seq) in &seqs {
-        let (acc, pname, org, gene) = parse_uniprot_header(header);
-        let gid = bp.add_genome(&acc, seq);
-        meta.insert(gid, (acc, pname, org, gene, seq.len()));
+        let (acc, _pname, _org, _gene) = parse_uniprot_header(header);
+
+        let normalized = normalize_il(seq);
+        let gid = bp.add_genome(&acc, &normalized);
+
+        meta.insert(gid, acc);
         pb.inc(1);
     }
+
     pb.finish_with_message("loaded");
-    bp.build();
-    println!("  {} proteins indexed in {:.1}s  (RAM: {:.0} MB)",
-        seqs.len(), t1.elapsed().as_secs_f64(), rss_mb());
 
-    // [3/4]+[4/4] Stream peptides -- never load full file; process in batches
-    // Each batch uses at most `batch_size * ~80 bytes` RAM then is dropped.
-    println!("\n[3/4]+[4/4] Streaming peptides and mapping ({} threads, batch={})...",
-        n_threads, batch_size);
-    let t2 = Instant::now();
+    // Use the existing parallel FM-index construction.
+    bp.build_parallel();
 
-    // Open peptide file for streaming
+    println!(
+        "  {} proteins indexed in {:.1}s (RAM: {:.0} MB)",
+        seqs.len(),
+        t1.elapsed().as_secs_f64(),
+        rss_mb()
+    );
+
+    // ------------------------------------------------------------------
+    // [3/4] Read TSV
+    //
+    // First column = peptide sequence.
+    // All other columns are preserved verbatim.
+    // ------------------------------------------------------------------
+
+    println!("\n[3/4] Reading peptide TSV...");
     let pep_file = std::fs::File::open(&args.peptides)
-        .map_err(|e| format!("Cannot open peptide file: {}", e))?;
-    let mut rdr = std::io::BufReader::new(pep_file);
+        .map_err(|e| format!("Cannot open peptide TSV: {}", e))?;
+    let mut rdr = BufReader::new(pep_file);
 
-    // Open TSV output file once; write header; stream rows as found
+    let mut header = String::new();
+    rdr.read_line(&mut header)
+        .map_err(|e| format!("Cannot read TSV header: {}", e))?;
+
+    if header.is_empty() {
+        return Err("Peptide TSV is empty".to_string());
+    }
+
+    let header = header.trim_end_matches(&['\r', '\n'][..]).to_string();
+    let header_cols = header.split('\t').count();
+
+    if header_cols < 1 {
+        return Err("Peptide TSV has no columns".to_string());
+    }
+
     let out_path = args.output.clone().unwrap_or_else(|| {
-        PathBuf::from(format!("{}.pep.tsv",
-            args.peptides.file_stem().unwrap_or_default().to_string_lossy()))
+        PathBuf::from(format!(
+            "{}.mapped.tsv",
+            args.peptides
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        ))
     });
+
     let out_file = std::fs::File::create(&out_path)
         .map_err(|e| format!("Cannot create output file: {}", e))?;
     let mut tsv = std::io::BufWriter::new(out_file);
-    {
-            writeln!(tsv, "{}", bit_pop::pep_output::HEADER)
-            .map_err(|e| format!("TSV header write: {}", e))?;
-    }
 
-    // Summary counters (replace all_hits Vec -- too large at 100M scale)
-    let mut n_submitted: usize = 0;
-    let mut n_mapped:    usize = 0;
-    let mut n_unique:    usize = 0;
-    let mut n_shared:    usize = 0;
+    writeln!(
+        tsv,
+        "{}\tProtein_IDs\tMatch_Positions",
+        header
+    )
+    .map_err(|e| format!("Cannot write TSV header: {}", e))?;
 
-    // Per-species stats: org -> (unique_count, shared_count, proteins_hit)
-    struct Sp {
-        unique: usize,
-        shared: usize,
-        prots:  std::collections::HashSet<String>,
-    }
-    impl Sp { fn new() -> Self { Self { unique: 0, shared: 0, prots: std::collections::HashSet::new() } } }
-    let mut by_org: std::collections::HashMap<String, Sp> = std::collections::HashMap::new();
+    // ------------------------------------------------------------------
+    // Read all rows.
+    //
+    // The input shown by the user is ~23k rows, so retaining the original
+    // TSV rows is cheap compared with the FM-index itself. This also lets
+    // us parallelize mapping while preserving input order in the output.
+    // ------------------------------------------------------------------
 
-    // Total proteins per organism from meta
-    let mut org_total: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (_, (_, _, org, _, _)) in meta.iter() {
-        *org_total.entry(org.clone()).or_insert(0) += 1;
-    }
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
-    let fuzzy_n = args.fuzzy_mismatches;
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .template("{spinner} {msg}").unwrap());
+    for line_result in rdr.lines() {
+        let line = line_result.map_err(|e| format!("TSV read error: {}", e))?;
 
-    let mut fasta_id: Option<String> = None;
-    let mut idx: usize = 0;
-
-    loop {
-        // Read one batch
-        let mut batch: Vec<bit_pop::peptide_input::Peptide> = Vec::new();
-        let actual_batch = batch_size;
-
-        use std::io::BufRead as _;
-        'read: loop {
-            if batch.len() >= actual_batch { break 'read; }
-            let mut line = String::new();
-            let n = rdr.read_line(&mut line)
-                .map_err(|e| format!("Read error: {}", e))?;
-            if n == 0 { break 'read; }  // EOF
-            let line = line.trim().to_string();
-            if line.is_empty() || line.starts_with('#') { continue; }
-            if line.starts_with('>') {
-                fasta_id = Some(line[1..].split_whitespace().next()
-                    .unwrap_or("pep").to_string());
-                continue;
-            }
-            for token in if fasta_id.is_some() { vec![line.as_str()] }
-                         else { line.split_whitespace().collect::<Vec<_>>() } {
-                let upper = token.to_uppercase();
-                // Basic validation: only A-Z
-                if upper.bytes().all(|b| b.is_ascii_uppercase()) && !upper.is_empty() {
-                    let id = fasta_id.clone().unwrap_or_else(|| format!("p{}", idx));
-                    idx += 1;
-                    batch.push(bit_pop::peptide_input::Peptide { id, sequence: upper });
-                    if batch.len() >= actual_batch { break 'read; }
-                }
-            }
-            if fasta_id.is_some() { fasta_id = None; }
+        if line.is_empty() {
+            continue;
         }
 
-        if batch.is_empty() { break; }
-        let bsz = batch.len();
-        n_submitted += bsz;
+        let cols: Vec<String> = line.split('\t').map(str::to_string).collect();
 
-        pb.set_message(format!(
-            "batch {}: {} submitted, {} mapped ({:.1}%), RAM {:.0} MB, {:.1}s",
-            (n_submitted / actual_batch).max(1),
-            n_submitted, n_mapped,
-            100.0 * n_mapped as f64 / n_submitted as f64,
-            rss_mb(), t2.elapsed().as_secs_f64()
-        ));
+        if cols.len() < header_cols {
+            return Err(format!(
+                "Malformed TSV row: expected at least {} columns, found {}",
+                header_cols,
+                cols.len()
+            ));
+        }
 
-        // Write hits directly from par_iter via Mutex -- no batch_results Vec.
-        // This keeps peak RAM = batch (input) + FM-index, not batch + all hits.
-        use rayon::prelude::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Mutex;
+        rows.push(cols);
+    }
 
-        let done_ctr    = AtomicUsize::new(0);
-        let mapped_ctr  = AtomicUsize::new(0);
-        let unique_ctr  = AtomicUsize::new(0);
-        let shared_ctr  = AtomicUsize::new(0);
+    println!("  {} peptide rows read", rows.len());
 
-        // Mutex guards: TSV writer + per-species stats
-        let tsv_lock    = Mutex::new(&mut tsv);
-        let by_org_lock = Mutex::new(&mut by_org);
+    // ------------------------------------------------------------------
+    // [4/4] Parallel FM-index mapping
+    // ------------------------------------------------------------------
 
-        batch.par_iter().for_each(|pep| {
-            let pep_len = pep.sequence.len();
-            if pep_len < 1 { return; }
+    println!("\n[4/4] Mapping peptides with {} threads...", n_threads);
+    let t2 = Instant::now();
 
-            let candidates: Vec<(u32, u64, u32)> = if fuzzy_n == 0 {
-                bp.find_peptide_exact(&pep.sequence)
-                    .into_iter().map(|(g, p)| (g, p, 0u32)).collect()
-            } else {
-                bp.find_peptide_fuzzy(&pep.sequence, fuzzy_n)
-            };
+    let results: Vec<(String, String)> = rows
+        .par_iter()
+        .map(|cols| {
+            let peptide_original = &cols[0];
+            let peptide = normalize_peptide(peptide_original);
 
-            let c = done_ctr.fetch_add(1, Ordering::Relaxed) + 1;
-            if c % 500_000 == 0 {
-                pb.set_message(format!(
-                    "{} searched, {} mapped, RAM {:.0} MB, {:.1}s",
-                    n_submitted - batch.len() + c,
-                    mapped_ctr.load(Ordering::Relaxed),
-                    rss_mb(), t2.elapsed().as_secs_f64()));
+            if peptide.is_empty() {
+                return (String::new(), String::new());
             }
 
-            if candidates.is_empty() { return; }
+            let candidates = bp.find_peptide_exact(&peptide);
 
-            let mut hits: Vec<PepHit> = candidates.into_iter().filter_map(|(gid, pos0, mm)| {
-                let pos0 = pos0 as usize;
-                let score = (pep_len - mm as usize) as f32 / pep_len as f32;
-                let (acc, pname, org, gene, _) = meta.get(&gid).cloned().unwrap_or_default();
-                Some(PepHit {
-                    peptide_id:   pep.id.clone(),
-                    sequence:     pep.sequence.clone(),
-                    protein_acc:  acc,
-                    protein_name: format!("{} [{}] {}", pname, gene, org),
-                    proteome_id:  args.proteome.clone(),
-                    start:        pos0 + 1,
-                    end:          pos0 + pep_len,
-                    score, mismatches: mm, status: HitStatus::Unmapped,
+            if candidates.is_empty() {
+                return (String::new(), String::new());
+            }
+
+            // gid -> positions
+            let mut by_protein: HashMap<u32, Vec<usize>> = HashMap::new();
+
+            for (gid, pos0) in candidates {
+                by_protein
+                    .entry(gid)
+                    .or_default()
+                    .push(pos0 as usize + 1); // 1-based
+            }
+
+            // Deterministic ordering by protein accession.
+            let mut proteins: Vec<(String, Vec<usize>)> = by_protein
+                .into_iter()
+                .filter_map(|(gid, mut positions)| {
+                    let acc = meta.get(&gid)?.clone();
+                    positions.sort_unstable();
+                    positions.dedup();
+                    Some((acc, positions))
                 })
-            }).collect();
-            assign_status(&mut hits);
+                .collect();
 
-            // Update counters per-peptide (not per-hit)
-            // assign_status sets same status on all hits for a peptide
-            mapped_ctr.fetch_add(1, Ordering::Relaxed);
-            if let Some(h) = hits.first() {
-                match h.status {
-                    HitStatus::Unique => { unique_ctr.fetch_add(1, Ordering::Relaxed); }
-                    HitStatus::Shared => { shared_ctr.fetch_add(1, Ordering::Relaxed); }
-                    _ => {}
-                }
-            }
+            proteins.sort_by(|a, b| a.0.cmp(&b.0));
 
-            // Write TSV rows under lock -- lock held briefly per peptide
-            {
-                let mut w = tsv_lock.lock().unwrap();
-                for h in &hits {
-                    let _ = writeln!(*w,
-                        "{}	{}	{}	{}	{}	{}	{}	{:.4}	{}	{}",
-                        h.peptide_id, h.sequence, h.protein_acc, h.protein_name,
-                        h.proteome_id, h.start, h.end, h.score, h.mismatches,
-                        h.status.as_str());
-                }
-            }
+            let protein_ids = proteins
+                .iter()
+                .map(|(acc, _)| acc.as_str())
+                .collect::<Vec<_>>()
+                .join(";");
 
-            // Update species stats under lock
-            {
-                let mut org_map = by_org_lock.lock().unwrap();
-                for h in &hits {
-                    let org = h.protein_name.split("] ").last().unwrap_or("").trim().to_string();
-                    let sp = org_map.entry(org).or_insert_with(Sp::new);
-                    match h.status {
-                        HitStatus::Unique => { sp.unique += 1; }
-                        HitStatus::Shared => { sp.shared += 1; }
-                        _ => {}
+            let match_positions = proteins
+                .iter()
+                .map(|(acc, positions)| {
+                    format!(
+                        "{}:{}",
+                        acc,
+                        positions
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+
+            (protein_ids, match_positions)
+        })
+        .collect();
+
+    let mut n_mapped = 0usize;
+    let mut n_occurrences = 0usize;
+
+    for (cols, (protein_ids, positions)) in rows.iter().zip(results.iter()) {
+        if !protein_ids.is_empty() {
+            n_mapped += 1;
+
+            // Count individual occurrences from Match_Positions.
+            for protein_match in positions.split(';') {
+                if let Some((_, pos)) = protein_match.split_once(':') {
+                    if !pos.is_empty() {
+                        n_occurrences += pos.split(',').count();
                     }
-                    sp.prots.insert(h.protein_acc.clone());
                 }
             }
-        });
-
-        // Harvest atomic counters after par_iter completes
-        n_mapped += mapped_ctr.load(Ordering::Relaxed);
-        n_unique += unique_ctr.load(Ordering::Relaxed);
-        n_shared += shared_ctr.load(Ordering::Relaxed);
-
-        // Drop batch immediately
-        drop(batch);
-    }
-
-    pb.finish_with_message(format!(
-        "done -- {} submitted, {} mapped ({:.1}%), {:.1}s",
-        n_submitted, n_mapped,
-        100.0 * n_mapped as f64 / n_submitted.max(1) as f64,
-        t2.elapsed().as_secs_f64()
-    ));
-    {
-            tsv.flush().map_err(|e| format!("TSV flush: {}", e))?;
-    }
-
-    let n_unmapped = n_submitted - n_mapped;
-
-    println!("\n================================================================");
-    println!("  Output  : {}", out_path.display());
-    println!("  Mapping : {:.2}s  |  Total: {:.2}s  |  Peak RAM: {:.0} MB\n",
-        t2.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64(), rss_mb());
-    println!("-----------------------------------------");
-    println!("Peptides submitted : {}", n_submitted);
-    println!("Mapped             : {} ({:.1}%)",
-        n_mapped, 100.0 * n_mapped as f64 / n_submitted.max(1) as f64);
-    println!("  unique            : {}", n_unique);
-    println!("  shared (>1 prot.) : {}", n_shared);
-    println!("  cross-proteome    : 0");
-    println!("Unmapped           : {}", n_unmapped);
-    println!("-----------------------------------------");
-
-    // Species table
-    if !by_org.is_empty() {
-        let ow=38usize; let nw=8usize; let pw=6usize; let rw=8usize;
-        let sep = format!(
-            "  {:-<ow$}  {:-<nw$}  {:-<nw$}  {:-<nw$}  {:-<pw$}  {:-<rw$}  {:-<rw$}  {:-<pw$}",
-            "","","","","","","","", ow=ow,nw=nw,pw=pw,rw=rw);
-        println!("\nPeptide -> Protein -> Species  (top 20 by total peptides)");
-        println!("{}", sep);
-        println!(
-            "  {:<ow$}  {:>nw$}  {:>nw$}  {:>nw$}  {:>pw$}  {:>rw$}  {:>rw$}  {:>pw$}",
-            "Organism","Unique","Shared","Total","%total","ProtsHit","TotalProt","%Prots",
-            ow=ow,nw=nw,pw=pw,rw=rw);
-        println!("{}", sep);
-        let mut rows: Vec<_> = by_org.iter().collect();
-        rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.unique + s.shared));
-        for (org, s) in rows.iter().take(20) {
-            let ntot  = s.unique + s.shared;
-            let pct   = 100.0 * ntot as f64 / n_submitted.max(1) as f64;
-            let nhit  = s.prots.len();
-            let ntpro = *org_total.get(*org).unwrap_or(&0);
-            let ppro  = if ntpro > 0 { 100.0 * nhit as f64 / ntpro as f64 } else { 0.0 };
-            let otr   = if org.len() > ow { format!("{}...", &org[..ow-3]) } else { org.to_string() };
-            println!(
-                "  {:<ow$}  {:>nw$}  {:>nw$}  {:>nw$}  {:>pw$.1}  {:>rw$}  {:>rw$}  {:>pw$.1}",
-                otr, s.unique, s.shared, ntot, pct, nhit, ntpro, ppro,
-                ow=ow,nw=nw,pw=pw,rw=rw);
         }
-        println!("{}", sep);
-        if rows.len() > 20 { println!("  ... and {} more organisms", rows.len()-20); }
-        println!();
-        println!("  Unique/Shared/Total = peptide counts; %total = % of submitted");
-        println!("  ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage");
+
+        writeln!(
+            tsv,
+            "{}\t{}\t{}",
+            cols.join("\t"),
+            protein_ids,
+            positions
+        )
+        .map_err(|e| format!("TSV write error: {}", e))?;
     }
+
+    tsv.flush()
+        .map_err(|e| format!("TSV flush error: {}", e))?;
+
+    let elapsed = t2.elapsed().as_secs_f64();
+    let total = t0.elapsed().as_secs_f64();
+
+    println!("\n============================================================");
+    println!("  Output            : {}", out_path.display());
+    println!("  Peptides          : {}", rows.len());
+    println!(
+        "  Mapped            : {} ({:.1}%)",
+        n_mapped,
+        100.0 * n_mapped as f64 / rows.len().max(1) as f64
+    );
+    println!("  Unmapped          : {}", rows.len() - n_mapped);
+    println!("  Total occurrences : {}", n_occurrences);
+    println!("  Indexing time     : {:.2}s", t1.elapsed().as_secs_f64());
+    println!("  Mapping time      : {:.2}s", elapsed);
+    println!("  Total time        : {:.2}s", total);
+    println!("  RAM               : {:.0} MB", rss_mb());
+    println!("============================================================");
+
     Ok(())
+}
+
+/// Normalize a protein/peptide sequence exactly as required by the
+/// original Perl mapper:
+///   - uppercase
+///   - I and L are considered equivalent
+///   - retain amino-acid letters only
+fn normalize_il(sequence: &str) -> String {
+    sequence
+        .bytes()
+        .filter(|b| b.is_ascii_alphabetic())
+        .map(|b| {
+            let b = b.to_ascii_uppercase();
+            if b == b'I' { b'L' } else { b }
+        })
+        .map(char::from)
+        .collect()
+}
+
+/// Normalize a peptide query.
+fn normalize_peptide(sequence: &str) -> String {
+    normalize_il(sequence)
 }

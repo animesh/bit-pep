@@ -1,118 +1,46 @@
 # Bit-Pep: Multi-Proteome Peptide Classification
 
-Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) to Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) , running it is simple as installing cargo/rust `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, adding to the path, for bash/ubuntu `source $HOME/.bashrc` and running `cargo run --bin bit-pep -- run-prot <proteome in fasta format> -p <peptides list one per line in txt or fasta format> -j <number of CPU to use> -m <RAM in GB>` for example to map peptides from MaxQuant HeLa DIA [results](https://fuzzylife.substack.com/p/proteomics-data-processing-with-maxquant) using 2 CPU (-j 2) and 4GB RAM (-m 2)
+Adapting [bit-pop](https://github.com/mladenpop-oss/bit-pop/) to map Peptide(s) to Proteome(s) as [bit-pep](https://github.com/animesh/bit-pep/) , running it is simple as installing cargo/rust `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, adding to the path, for bash/ubuntu `source $HOME/.bashrc` and running `cargo run --bin bit-pep -- run-prot <proteome in fasta format> -p <peptides list one per line in tab separated txt format> -j <number of CPU to use> -m <RAM in GB>` for example to map peptides from Fragpipe [peptide list](https://fragpipe.nesvilab.org/docs/tutorial_fragpipe_outputs.html#combined_peptidetsv) using 12 CPU (-j 12) to [Uniprot](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz)
 
 ```
 # install cargo/rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # update path 
 source $HOME/.bashrc
+# build bit-pep
+cargo build --release
 # run bit-pep
-cargo run --bin bit-pep -- run-prot uniprot_sprot.fasta -p peptides.txt -j 2 -m 4
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s
-     Running `target/debug/bit-pep run-prot uniprot_sprot.fasta -p peptides.txt -j 2 -m 4`
-bit-pep RunProt  (FM-index parallel peptide->proteome search)
-===============================================================
-  Threads : 2 (of 2 logical CPUs)
-  Memory  : 4.0 GB  ->  batch size: 33554432 peptides
+./target/release/bit-pep run-prot \
+    /root/bit-pep/uniprot_sprot.fasta \
+    --peptides /root/bit-pep/combined_peptide.tsv \
+    --output /root/bit-pep/combined_peptide_mapped.tsv \
+    --threads 12
+bit-pep RunProt  (FM-index TSV peptide -> protein mapping)
+============================================================
+  Threads : 12 (of 12 logical CPUs)
 
 [1/4] Resolving proteome...
-  uniprot_sprot.fasta (274.2 MB)
+  /root/bit-pep/uniprot_sprot.fasta (274.7 MB)
 
 [2/4] Indexing proteins...
-  Loading: [00:00:18 ████████████████████████████████████████ 574627/574627]                                          574627 proteins indexed in 75.0s  (RAM: 3430 MB)
+  Loading: [00:00:02 ████████████████████████████████████████] 575503/575503                                                                                                                                                                                 575503 proteins indexed in 39.9s (RAM: 3705 MB)
 
-[3/4]+[4/4] Streaming peptides and mapping (2 threads, batch=33554432)...
-  done -- 58920 submitted, 54626 mapped (92.7%), 3.1s                                                               
-================================================================
-  Output  : peptides.pep.tsv
-  Mapping : 3.09s  |  Total: 78.12s  |  Peak RAM: 3434 MB
+[3/4] Reading peptide TSV...
+  638 peptide rows read
 
------------------------------------------
-Peptides submitted : 58920
-Mapped             : 54626 (92.7%)
-  unique            : 25225
-  shared (>1 prot.) : 208666
-  cross-proteome    : 0
-Unmapped           : 4294
------------------------------------------
+[4/4] Mapping peptides with 12 threads...
 
-Peptide -> Protein -> Species  (top 20 by total peptides)
-  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-  Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
-  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-  Homo sapiens                               25107     50456     75563   128.2      6852     20431    33.5
-  Mus musculus                                  49     29936     29985    50.9      4656     17252    27.0
-  Rattus norvegicus                             18     16870     16888    28.7      2333      8226    28.4
-  Bos taurus                                     4     12063     12067    20.5      1651      6052    27.3
-  Pongo abelii                                   7      8660      8667    14.7       898      2218    40.5
-  Gallus gallus                                  3      5230      5233     8.9       634      2314    27.4
-  Xenopus laevis                                 0      4372      4372     7.4       752      3514    21.4
-  Sus scrofa                                     0      3933      3933     6.7       439      1462    30.0
-  Macaca fascicularis                            1      3758      3759     6.4       417      1176    35.5
-  Oryctolagus cuniculus                          1      3042      3043     5.2       348       979    35.5
-  Canis lupus familiaris                         0      2356      2356     4.0       251       857    29.3
-  Pan troglodytes                                0      2273      2273     3.9       224       692    32.4
-  Arabidopsis thaliana                           1      2264      2265     3.8       533     16418     3.2
-  Drosophila melanogaster                        1      2206      2207     3.7       366      3868     9.5
-  Danio rerio                                    1      2039      2040     3.5       502      3369    14.9
-  Xenopus tropicalis                             0      1659      1659     2.8       326      1713    19.0
-  Caenorhabditis elegans                         0      1555      1555     2.6       294      4499     6.5
-  Cricetulus griseus                             0      1526      1526     2.6       105       248    42.3
-  Dictyostelium discoideum                       0      1159      1159     2.0       196      4163     4.7
-  Mesocricetus auratus                           0      1056      1056     1.8       102       277    36.8
-  --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-  ... and 2663 more organisms
-
-  Unique/Shared/Total = peptide counts; %total = % of submitted
-  ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
-```
-
-notice `4294` peptides are `Unmapped` which is mainly due to missing isofom/peptides[LAQPGFPSGGPGGTR,SPIAAARCR,...] in [uniprot_sprot.fasta](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz) and deleted protein/peptides[ELQQVTAGEAASIH,QVCQVPASR,...] in [current human proteome](https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29) leading to `Unmapped           : 4294` verified by [including](https://zenodo.org/records/20344308) human proteome from [2024](https://github.com/user-attachments/files/16439166/mqpar.xml.txt)
-```
-wget "https://rest.uniprot.org/uniprotkb/stream?download=true&format=fasta&includeIsoform=true&query=%28%28proteome%3AUP000005640%29%29" -O human.fasta
-wget https://zenodo.org/records/20344308/files/uniprotkb_proteome_UP000005640_2024_04_18.fasta 
-cat uniprotkb_proteome_UP000005640_2024_04_18.fasta >> human.fasta
-wget "https://zenodo.org/records/14557756/files/proteinGroups.txt"
-grep -vE "Peptide|CON__|REV__" proteinGroups.txt| awk -F '\t' '{print $92}'  | sed 's/;/\n/g'  > peptides.txt 
-cargo run --bin bit-pep -- run-prot human.fasta  -p peptides.txt -j 12 
-        Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
-        Running `target/debug/bit-pep run-prot human.fasta -p peptides.txt -j 12`
-    bit-pep RunProt  (FM-index parallel peptide->proteome search)
-    ===============================================================
-    Threads : 12 (of 12 logical CPUs)
-    Memory  : 67.5 GB  ->  batch size: 565961632 peptides
-
-    [1/4] Resolving proteome...
-    human.fasta (106.3 MB)
-
-    [2/4] Indexing proteins...
-    Loading: [00:00:07 ████████████████████████████████████████ 210230/210230]                                                         210230 proteins indexed in 49.2s  (RAM: 1392 MB)
-
-    [3/4]+[4/4] Streaming peptides and mapping (12 threads, batch=565961632)...
-    done -- 58920 submitted, 58920 mapped (100.0%), 6.7s                                                                             
-    ================================================================
-    Output  : peptides.pep.tsv
-    Mapping : 6.70s  |  Total: 55.85s  |  Peak RAM: 1401 MB
-
-    -----------------------------------------
-    Peptides submitted : 58920
-    Mapped             : 58920 (100.0%)
-    unique            : 23403
-    shared (>1 prot.) : 657336
-    cross-proteome    : 0
-    Unmapped           : 0
-    -----------------------------------------
-
-    Peptide -> Protein -> Species  (top 20 by total peptides)
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Organism                                  Unique    Shared     Total  %total  ProtsHit  TotalProt  %Prots
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-    Homo sapiens                               23403    657336    680739  1155.4     35721    210230    17.0
-    --------------------------------------  --------  --------  --------  ------  --------  --------  ------
-
-    Unique/Shared/Total = peptide counts; %total = % of submitted
-    ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage
+============================================================
+  Output            : /root/bit-pep/combined_peptide_mapped.tsv
+  Peptides          : 638
+  Mapped            : 638 (100.0%)
+  Unmapped          : 0
+  Total occurrences : 8149
+  Indexing time     : 39.93s
+  Mapping time      : 0.01s
+  Total time        : 39.93s
+  RAM               : 3705 MB
+============================================================
 ```
 
 ### position of the hit is written as tab-separated text file in `<proteome>.pep.tsv` 
