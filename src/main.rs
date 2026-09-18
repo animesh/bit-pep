@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use bit_pop::cache::CacheManager;
@@ -2194,8 +2195,8 @@ pub struct RunProtArgs {
     /// Number of parallel threads (default: half of logical CPUs)
     #[arg(short = 'j', long)]
     threads: Option<usize>,
-    /// Memory budget in GB for peptide batch size (default: 2 GB per thread)
-    /// Larger values load more peptides per batch -- faster but uses more RAM
+    /// Total memory budget in GB used to size each FM-index chunk (default: 16 GB)
+    /// The chunk is also capped below the libsais i32 suffix-array limit.
     #[arg(short = 'm', long)]
     memory_gb: Option<f64>,
     /// Force re-download if proteome is a UPID
@@ -2256,14 +2257,16 @@ fn rss_mb() -> f64 {
 }
 
 pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
-    use rayon::prelude::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
+
+    const MAX_INDEX_TEXT: usize = 1_900_000_000;
+    const ESTIMATED_BYTES_PER_AA: f64 = 20.0;
 
     let n_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let n_threads = args.threads.unwrap_or(n_cpus.max(1));
+    let n_threads = args.threads.unwrap_or(n_cpus).max(1);
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(n_threads)
@@ -2286,53 +2289,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
             .unwrap_or(0) as f64 / 1_048_576.0
     );
 
-    println!("\n[2/4] Indexing proteins...");
-    let t1 = Instant::now();
-
-    let mut bp = bit_pop::BitPop::new(5);
-    bp.set_protein_mode(true);
-
-    let seqs = bit_pop::fasta::read_all_sequences(fasta_path.to_str().unwrap())
-        .map_err(|e| format!("Cannot read FASTA: {}", e))?;
-
-    // gid -> accession and organism, plus the number of proteins in each organism.
-    let mut meta: HashMap<u32, (String, String)> = HashMap::with_capacity(seqs.len());
-    let mut total_proteins_by_species: HashMap<String, usize> = HashMap::new();
-
-    let pb = ProgressBar::new(seqs.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner} Loading: [{elapsed_precise} {bar:40}] {pos}/{len}")
-            .unwrap(),
-    );
-
-    for (header, seq) in &seqs {
-        let (acc, _pname, organism, _gene) = parse_uniprot_header(header);
-        let organism = if organism.is_empty() {
-            "unknown".to_string()
-        } else {
-            organism
-        };
-
-        let normalized = normalize_il(seq);
-        let gid = bp.add_genome(&acc, &normalized);
-
-        meta.insert(gid, (acc, organism.clone()));
-        *total_proteins_by_species.entry(organism).or_insert(0) += 1;
-        pb.inc(1);
-    }
-
-    pb.finish_with_message("loaded");
-    bp.build_parallel();
-
-    println!(
-        "  {} proteins indexed in {:.1}s (RAM: {:.0} MB)",
-        seqs.len(),
-        t1.elapsed().as_secs_f64(),
-        rss_mb()
-    );
-
-    println!("\n[3/4] Reading peptide input...");
+    println!("\n[2/4] Reading peptide input...");
     let pep_file = std::fs::File::open(&args.peptides)
         .map_err(|e| format!("Cannot open peptide input: {}", e))?;
     let mut rdr = BufReader::new(pep_file);
@@ -2348,9 +2305,6 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     let first_line = first_line.trim_end_matches(&['\r', '\n'][..]).to_string();
     let first_cols: Vec<String> = first_line.split('\t').map(str::to_string).collect();
 
-    // Accept both the new TSV-with-header format and the original peptide-list
-    // format used by pep.txt. A tab means a real TSV header; common one-column
-    // header names are also recognized.
     let first_field_lower = first_cols[0].trim().to_ascii_lowercase();
     let known_header = matches!(
         first_field_lower.as_str(),
@@ -2378,7 +2332,6 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         if line.trim().is_empty() {
             continue;
         }
-
         let cols: Vec<String> = line.split('\t').map(str::to_string).collect();
         if cols.len() < header_cols {
             return Err(format!(
@@ -2410,6 +2363,25 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         p
     };
 
+    println!("  {} peptide rows read", rows.len());
+
+    let memory_gb = args.memory_gb.unwrap_or(16.0).max(1.0);
+    let memory_budget_bytes = memory_gb * 1024.0 * 1024.0 * 1024.0;
+    let memory_limited_text =
+        (memory_budget_bytes * 0.75 / ESTIMATED_BYTES_PER_AA) as usize;
+    let chunk_limit = memory_limited_text
+        .min(MAX_INDEX_TEXT)
+        .max(10_000_000);
+
+    println!("\n[3/4] Indexing proteome in chunks...");
+    println!("  Memory budget : {:.1} GB", memory_gb);
+    println!(
+        "  Index chunk   : {:.0} M amino acids (hard maximum {:.0} M)",
+        chunk_limit as f64 / 1_000_000.0,
+        MAX_INDEX_TEXT as f64 / 1_000_000.0
+    );
+    println!("  Suffix-array construction uses {} threads.", n_threads);
+
     let out_file = std::fs::File::create(&out_path)
         .map_err(|e| format!("Cannot create output file: {}", e))?;
     let mut tsv = std::io::BufWriter::new(out_file);
@@ -2421,74 +2393,98 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     )
     .map_err(|e| format!("Cannot write TSV header: {}", e))?;
 
-    println!("  {} peptide rows read", rows.len());
+    // Protein accession -> all matched 1-based positions.
+    // Only proteins hit by submitted peptides are retained here.
+    let mut all_hits: Vec<HashMap<String, Vec<usize>>> =
+        (0..rows.len()).map(|_| HashMap::new()).collect();
 
-    println!("\n[4/4] Mapping peptides with {} threads...", n_threads);
-    let t2 = Instant::now();
+    // Only one entry per matched accession is needed for species reporting.
+    let mut hit_accession_species: HashMap<String, String> = HashMap::new();
 
-    // protein_ids, distinct protein count, positions, matched gids
-    let results: Vec<(String, usize, String, Vec<u32>)> = rows
-        .par_iter()
-        .map(|cols| {
-            let peptide = normalize_peptide(&cols[0]);
+    // This is small compared with the protein sequences: one counter per species.
+    let mut total_proteins_by_species: HashMap<String, usize> = HashMap::new();
 
-            if peptide.is_empty() {
-                return (String::new(), 0, String::new(), Vec::new());
-            }
+    let mut fasta_reader = bit_pop::fasta::FastaReader::new(
+        fasta_path.to_str().unwrap()
+    )
+    .map_err(|e| format!("Cannot read FASTA: {}", e))?;
 
-            let candidates = bp.find_peptide_exact(&peptide);
-            if candidates.is_empty() {
-                return (String::new(), 0, String::new(), Vec::new());
-            }
+    let mut chunk_seqs: Vec<(String, String)> = Vec::new();
+    let mut chunk_aa = 0usize;
+    let mut total_proteins = 0usize;
+    let mut chunk_no = 0usize;
+    let mut total_index_time = 0.0f64;
+    let mut total_mapping_time = 0.0f64;
 
-            let mut by_protein: HashMap<u32, Vec<usize>> = HashMap::new();
-            for (gid, pos0) in candidates {
-                by_protein
-                    .entry(gid)
-                    .or_default()
-                    .push(pos0 as usize + 1);
-            }
+    while let Some(result) = fasta_reader.next() {
+        let (header_line, seq) =
+            result.map_err(|e| format!("FASTA read error: {}", e))?;
 
-            let mut proteins: Vec<(u32, String, Vec<usize>)> = by_protein
-                .into_iter()
-                .filter_map(|(gid, mut positions)| {
-                    let (acc, _) = meta.get(&gid)?.clone();
-                    positions.sort_unstable();
-                    positions.dedup();
-                    Some((gid, acc, positions))
-                })
-                .collect();
+        let normalized = normalize_il(&seq);
+        let seq_len = normalized.len();
 
-            proteins.sort_by(|a, b| a.1.cmp(&b.1));
+        let (_acc, _pname, organism, _gene) = parse_uniprot_header(&header_line);
+        let organism = if organism.is_empty() {
+            "unknown".to_string()
+        } else {
+            organism
+        };
 
-            let protein_ids = proteins
-                .iter()
-                .map(|(_, acc, _)| acc.as_str())
-                .collect::<Vec<_>>()
-                .join(";");
+        *total_proteins_by_species
+            .entry(organism.clone())
+            .or_insert(0) += 1;
+        total_proteins += 1;
 
-            let match_positions = proteins
-                .iter()
-                .map(|(_, acc, positions)| {
-                    format!(
-                        "{}:{}",
-                        acc,
-                        positions
-                            .iter()
-                            .map(|p| p.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(";");
+        if !chunk_seqs.is_empty() && chunk_aa.saturating_add(seq_len) > chunk_limit {
+            chunk_no += 1;
+            let (it, mt) = process_protein_chunk(
+                &chunk_seqs,
+                &rows,
+                &mut all_hits,
+                &mut hit_accession_species,
+                args.fuzzy_mismatches,
+                n_threads,
+                chunk_no,
+                total_proteins,
+            )?;
+            total_index_time += it;
+            total_mapping_time += mt;
+            chunk_seqs.clear();
+            chunk_aa = 0;
+        }
 
-            let gids = proteins.iter().map(|(gid, _, _)| *gid).collect::<Vec<_>>();
-            let protein_match_count = proteins.len();
+        chunk_aa = chunk_aa.saturating_add(seq_len);
+        chunk_seqs.push((header_line, normalized));
 
-            (protein_ids, protein_match_count, match_positions, gids)
-        })
-        .collect();
+        if total_proteins % 1_000_000 == 0 {
+            println!(
+                "  Read {:>12} proteins; current chunk {:>10.1} M AA",
+                total_proteins,
+                chunk_aa as f64 / 1_000_000.0
+            );
+        }
+    }
+
+    if !chunk_seqs.is_empty() {
+        chunk_no += 1;
+        let (it, mt) = process_protein_chunk(
+            &chunk_seqs,
+            &rows,
+            &mut all_hits,
+            &mut hit_accession_species,
+            args.fuzzy_mismatches,
+            n_threads,
+            chunk_no,
+            total_proteins,
+        )?;
+        total_index_time += it;
+        total_mapping_time += mt;
+    }
+
+    println!(
+        "  {} proteins processed in {} index chunks",
+        total_proteins, chunk_no
+    );
 
     let mut n_mapped = 0usize;
     let mut n_occurrences = 0usize;
@@ -2496,40 +2492,52 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     let mut n_shared = 0usize;
     let mut top100: Vec<(usize, String, usize)> = Vec::new();
 
-    // species -> (unique peptide count, shared peptide count, total peptide count, proteins hit)
-    let mut species_stats: HashMap<String, (usize, usize, usize, HashSet<u32>)> = HashMap::new();
+    let mut species_stats: HashMap<String, (usize, usize, usize, HashSet<String>)> =
+        HashMap::new();
 
-    for (row_index, (cols, (protein_ids, protein_match_count, positions, gids))) in
-        rows.iter().zip(results.iter()).enumerate()
-    {
-        if *protein_match_count > 0 {
+    for (row_index, (cols, hits)) in rows.iter().zip(all_hits.iter()).enumerate() {
+        let mut proteins: Vec<(&String, &Vec<usize>)> = hits.iter().collect();
+        proteins.sort_by(|a, b| a.0.cmp(b.0));
+
+        let protein_ids = proteins
+            .iter()
+            .map(|(acc, _)| acc.as_str())
+            .collect::<Vec<_>>()
+            .join(";");
+
+        let match_positions = proteins
+            .iter()
+            .map(|(acc, positions)| {
+                format!(
+                    "{}:{}",
+                    acc,
+                    positions
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+
+        let protein_match_count = proteins.len();
+
+        if protein_match_count > 0 {
             n_mapped += 1;
-            if *protein_match_count == 1 {
+            if protein_match_count == 1 {
                 n_unique += 1;
             } else {
                 n_shared += 1;
             }
 
-            for protein_match in positions.split(';') {
-                if let Some((_, pos)) = protein_match.split_once(':') {
-                    if !pos.is_empty() {
-                        n_occurrences += pos.split(',').count();
-                    }
-                }
-            }
+            n_occurrences += hits.values().map(Vec::len).sum::<usize>();
+            top100.push((protein_match_count, cols[0].clone(), row_index));
 
-            top100.push((*protein_match_count, cols[0].clone(), row_index));
-
-            // A peptide contributes once to each species it hits, even when
-            // it hits several proteins within that same species.
             let mut species_for_peptide: HashSet<&str> = HashSet::new();
-            for gid in gids {
-                if let Some((_, organism)) = meta.get(gid) {
+            for acc in hits.keys() {
+                if let Some(organism) = hit_accession_species.get(acc) {
                     species_for_peptide.insert(organism.as_str());
-                    let entry = species_stats
-                        .entry(organism.clone())
-                        .or_insert_with(|| (0, 0, 0, HashSet::new()));
-                    entry.3.insert(*gid);
                 }
             }
 
@@ -2537,12 +2545,19 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
                 let entry = species_stats
                     .entry(organism.to_string())
                     .or_insert_with(|| (0, 0, 0, HashSet::new()));
-                if *protein_match_count == 1 {
+
+                if protein_match_count == 1 {
                     entry.0 += 1;
                 } else {
                     entry.1 += 1;
                 }
                 entry.2 += 1;
+
+                for acc in hits.keys() {
+                    if hit_accession_species.get(acc).map(String::as_str) == Some(organism) {
+                        entry.3.insert(acc.clone());
+                    }
+                }
             }
         }
 
@@ -2552,7 +2567,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
             cols.join("\t"),
             protein_ids,
             protein_match_count,
-            positions
+            match_positions
         )
         .map_err(|e| format!("TSV write error: {}", e))?;
     }
@@ -2560,30 +2575,32 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     tsv.flush()
         .map_err(|e| format!("TSV flush error: {}", e))?;
 
-    top100.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-    top100.truncate(100);
-
-    // Write the species summary as a separate TSV, containing all species.
     let species_file = std::fs::File::create(&species_path)
         .map_err(|e| format!("Cannot create species TSV: {}", e))?;
     let mut species_tsv = std::io::BufWriter::new(species_file);
+
     writeln!(
         species_tsv,
         "Organism\tUnique\tShared\tTotal\t%total\tProtsHit\tTotalProt\t%Prots"
     )
     .map_err(|e| format!("Cannot write species TSV header: {}", e))?;
 
-    let mut species_rows: Vec<(String, usize, usize, usize, usize, usize)> = species_stats
-        .into_iter()
-        .map(|(organism, (unique, shared, total, proteins_hit))| {
-            let total_prot = *total_proteins_by_species.get(&organism).unwrap_or(&0);
-            (organism, unique, shared, total, proteins_hit.len(), total_prot)
-        })
-        .collect();
+    let mut species_rows: Vec<(String, usize, usize, usize, usize, usize)> =
+        species_stats
+            .into_iter()
+            .map(|(organism, (unique, shared, total, proteins_hit))| {
+                let total_prot =
+                    *total_proteins_by_species.get(&organism).unwrap_or(&0);
+                (
+                    organism,
+                    unique,
+                    shared,
+                    total,
+                    proteins_hit.len(),
+                    total_prot,
+                )
+            })
+            .collect();
 
     species_rows.sort_by(|a, b| {
         b.3.cmp(&a.3)
@@ -2601,6 +2618,7 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         } else {
             *prots_hit as f64 / *total_prot as f64 * 100.0
         };
+
         writeln!(
             species_tsv,
             "{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{:.1}",
@@ -2608,10 +2626,17 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
         )
         .map_err(|e| format!("Species TSV write error: {}", e))?;
     }
+
     species_tsv.flush()
         .map_err(|e| format!("Species TSV flush error: {}", e))?;
 
-    let elapsed = t2.elapsed().as_secs_f64();
+    top100.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    top100.truncate(100);
+
     let total = t0.elapsed().as_secs_f64();
 
     println!("\n============================================================");
@@ -2627,28 +2652,40 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     println!("    shared (>1 prot): {}", n_shared);
     println!("  Unmapped          : {}", rows.len() - n_mapped);
     println!("  Total occurrences : {}", n_occurrences);
-    println!("  Indexing time     : {:.2}s", t1.elapsed().as_secs_f64());
-    println!("  Mapping time      : {:.2}s", elapsed);
+    println!("  Indexing time     : {:.2}s", total_index_time);
+    println!("  Mapping time      : {:.2}s", total_mapping_time);
     println!("  Total time        : {:.2}s", total);
     println!("  RAM               : {:.0} MB", rss_mb());
 
     println!("\nPeptide -> Protein -> Species  (top 100 by total peptides)");
     println!("--------------------------------------  --------  --------  --------  ------  --------  --------  ------");
-    println!("{:<38} {:>8} {:>8} {:>8} {:>7} {:>8} {:>9} {:>7}",
-        "Organism", "Unique", "Shared", "Total", "%total", "ProtsHit", "TotalProt", "%Prots");
+    println!(
+        "{:<38} {:>8} {:>8} {:>8} {:>7} {:>8} {:>9} {:>7}",
+        "Organism", "Unique", "Shared", "Total", "%total", "ProtsHit", "TotalProt", "%Prots"
+    );
     println!("--------------------------------------  --------  --------  --------  ------  --------  --------  ------");
 
     for (organism, unique, shared, total, prots_hit, total_prot) in species_rows.iter().take(100) {
-        let pct_total = if rows.is_empty() { 0.0 } else { *total as f64 / rows.len() as f64 * 100.0 };
-        let pct_prots = if *total_prot == 0 { 0.0 } else { *prots_hit as f64 / *total_prot as f64 * 100.0 };
+        let pct_total = if rows.is_empty() {
+            0.0
+        } else {
+            *total as f64 / rows.len() as f64 * 100.0
+        };
+        let pct_prots = if *total_prot == 0 {
+            0.0
+        } else {
+            *prots_hit as f64 / *total_prot as f64 * 100.0
+        };
         let display = if organism.chars().count() > 38 {
             let short: String = organism.chars().take(35).collect();
             format!("{}...", short)
         } else {
             organism.clone()
         };
-        println!("{:<38} {:>8} {:>8} {:>8} {:>6.1} {:>8} {:>9} {:>6.1}",
-            display, unique, shared, total, pct_total, prots_hit, total_prot, pct_prots);
+        println!(
+            "{:<38} {:>8} {:>8} {:>8} {:>6.1} {:>8} {:>9} {:>6.1}",
+            display, unique, shared, total, pct_total, prots_hit, total_prot, pct_prots
+        );
     }
 
     if species_rows.is_empty() {
@@ -2656,34 +2693,140 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     }
 
     println!("--------------------------------------  --------  --------  --------  ------  --------  --------  ------");
-    println!("  Unique/Shared/Total = peptide counts; %total = % of submitted");
-    println!("  ProtsHit/TotalProt = proteins hit / proteins in DB; %Prots = coverage");
 
     println!("\nTop 100 peptides by number of matching proteins");
     println!("------------------------------------------------------------");
-    println!("Rank  Peptide                                     Proteins");
+    println!("{:<6} {:<40} {:>10}", "Rank", "Peptide", "Proteins");
+
     for (rank, (count, peptide, _)) in top100.iter().enumerate() {
         let display = if peptide.chars().count() > 40 {
-            let short: String = peptide.chars().take(37).collect();
-            format!("{}...", short)
+            format!("{}...", peptide.chars().take(37).collect::<String>())
         } else {
             peptide.clone()
         };
-        println!("{:>4}  {:<40}  {:>8}", rank + 1, display, count);
+        println!("{:>4}  {:<40} {:>10}", rank + 1, display, count);
     }
+
     if top100.is_empty() {
         println!("  No mapped peptides.");
     }
+
     println!("============================================================");
 
     Ok(())
 }
 
-/// Normalize a protein/peptide sequence exactly as required by the
-/// original Perl mapper:
-///   - uppercase
-///   - I and L are considered equivalent
-///   - retain amino-acid letters only
+fn process_protein_chunk(
+    chunk_seqs: &[(String, String)],
+    rows: &[Vec<String>],
+    all_hits: &mut [HashMap<String, Vec<usize>>],
+    hit_accession_species: &mut HashMap<String, String>,
+    fuzzy_mismatches: usize,
+    n_threads: usize,
+    chunk_no: usize,
+    total_proteins: usize,
+) -> Result<(f64, f64), String> {
+    use rayon::prelude::*;
+    use std::collections::HashMap;
+
+    let t_index = Instant::now();
+
+    let mut bp = bit_pop::BitPop::new(5);
+    bp.set_protein_mode(true);
+
+    let mut meta: HashMap<u32, (String, String)> =
+        HashMap::with_capacity(chunk_seqs.len());
+
+    for (header, seq) in chunk_seqs {
+        let (acc, _pname, organism, _gene) = parse_uniprot_header(header);
+        let organism = if organism.is_empty() {
+            "unknown".to_string()
+        } else {
+            organism
+        };
+        let gid = bp.add_genome(&acc, seq);
+        meta.insert(gid, (acc, organism));
+    }
+
+    bp.build_parallel();
+
+    let index_time = t_index.elapsed().as_secs_f64();
+    let t_map = Instant::now();
+
+    let chunk_hits: Vec<(usize, Vec<(String, String, Vec<usize>)>)> = rows
+        .par_iter()
+        .enumerate()
+        .filter_map(|(row_index, cols)| {
+            let peptide = normalize_peptide(&cols[0]);
+            if peptide.is_empty() {
+                return None;
+            }
+
+            let mut by_protein: HashMap<u32, Vec<usize>> = HashMap::new();
+
+            if fuzzy_mismatches == 0 {
+                for (gid, pos0) in bp.find_peptide_exact(&peptide) {
+                    by_protein
+                        .entry(gid)
+                        .or_default()
+                        .push(pos0 as usize + 1);
+                }
+            } else {
+                for (gid, pos0, _mismatches) in
+                    bp.find_peptide_fuzzy(&peptide, fuzzy_mismatches)
+                {
+                    by_protein
+                        .entry(gid)
+                        .or_default()
+                        .push(pos0 as usize + 1);
+                }
+            }
+
+            if by_protein.is_empty() {
+                None
+            } else {
+                let mut hits = Vec::with_capacity(by_protein.len());
+                for (gid, mut positions) in by_protein {
+                    positions.sort_unstable();
+                    positions.dedup();
+                    if let Some((acc, organism)) = meta.get(&gid) {
+                        hits.push((acc.clone(), organism.clone(), positions));
+                    }
+                }
+                Some((row_index, hits))
+            }
+        })
+        .collect();
+
+    for (row_index, hits) in chunk_hits {
+        let entry = &mut all_hits[row_index];
+        for (acc, organism, positions) in hits {
+            hit_accession_species
+                .entry(acc.clone())
+                .or_insert(organism);
+            let target = entry.entry(acc).or_default();
+            target.extend(positions);
+            target.sort_unstable();
+            target.dedup();
+        }
+    }
+
+    let map_time = t_map.elapsed().as_secs_f64();
+
+    println!(
+        "  Chunk {:>4}: {:>10} proteins | {:>8.1} M AA | index {:>7.1}s | map {:>7.1}s | processed {:>12}",
+        chunk_no,
+        chunk_seqs.len(),
+        chunk_seqs.iter().map(|(_, s)| s.len()).sum::<usize>() as f64 / 1_000_000.0,
+        index_time,
+        map_time,
+        total_proteins
+    );
+
+    let _ = n_threads;
+    Ok((index_time, map_time))
+}
+
 fn normalize_il(sequence: &str) -> String {
     sequence
         .bytes()

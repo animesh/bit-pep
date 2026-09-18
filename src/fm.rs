@@ -3,14 +3,14 @@
 /// Encoding: $=0 (sentinel), A=1, C=2, G=3, T=4
 /// SA construction via libsais (SA-IS, O(n))
 /// Parallel build support via rayon
-use libsais::SuffixArrayConstruction;
+use libsais::{SuffixArrayConstruction, ThreadCount};
 use rayon::prelude::*;
 
 pub const ALPHABET_SIZE: usize = 27; // sentinel=0, 20 std AAs=1-20, 6 IUPAC ambiguous=21-26 // $=0, A=1, C=2, G=3, T=4
 const SAMPLE_INTERVAL: usize = 32;
 
 // --- Suffix Array Construction (SA-IS via libsais, O(n)) ---
-fn build_suffix_array(s: &[u8]) -> Vec<usize> {
+fn build_suffix_array(s: &[u8], threads: usize) -> Vec<usize> {
     let n = s.len();
     if n == 0 {
         return vec![];
@@ -26,7 +26,7 @@ fn build_suffix_array(s: &[u8]) -> Vec<usize> {
 
     let result = SuffixArrayConstruction::for_text(s)
         .in_borrowed_buffer(&mut sa_buffer)
-        .single_threaded()
+        .multi_threaded(ThreadCount::fixed(threads.max(1).min(u16::MAX as usize) as u16))
         .run();
 
     match result {
@@ -320,7 +320,7 @@ impl FmIndex {
         }
         s.push(0); // final sentinel
 
-        let sa = build_suffix_array(&s);
+        let sa = build_suffix_array(&s, 1);
         let bwt = build_bwt_from_sa(&sa, &s);
 
         // C-array: C[c] = number of chars < c in BWT
@@ -373,7 +373,7 @@ impl FmIndex {
         s.push(0);
 
         let num_threads = rayon::current_num_threads();
-        let sa = build_suffix_array(&s);
+        let sa = build_suffix_array(&s, num_threads);
         let bwt = build_bwt_from_sa_parallel(&sa, &s, num_threads);
 
         let mut counts = [0usize; ALPHABET_SIZE];
@@ -784,7 +784,7 @@ mod tests {
         let mut s: Vec<u8> = seq.clone();
         s.push(0); // sentinel $
 
-        let sa = build_suffix_array(&s);
+        let sa = build_suffix_array(&s, 1);
         let bwt = build_bwt_from_sa(&sa, &s);
 
         eprintln!("SA: {:?}", sa);
