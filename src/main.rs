@@ -1,7 +1,8 @@
+mod protein_scan;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use std::time::Instant;
 
 use bit_pop::cache::CacheManager;
@@ -2192,11 +2193,10 @@ pub struct RunProtArgs {
     /// Max mismatches allowed per peptide (0 = exact match only)
     #[arg(long, default_value = "0")]
     fuzzy_mismatches: usize,
-    /// Number of parallel threads (default: half of logical CPUs)
+    /// Number of scan threads (default: all available CPUs)
     #[arg(short = 'j', long)]
     threads: Option<usize>,
-    /// Total memory budget in GB used to size each FM-index chunk (default: 16 GB)
-    /// The chunk is also capped below the libsais i32 suffix-array limit.
+    /// Retained for CLI compatibility; streaming protein mapping does not need an index memory budget.
     #[arg(short = 'm', long)]
     memory_gb: Option<f64>,
     /// Force re-download if proteome is a UPID
@@ -2206,7 +2206,7 @@ pub struct RunProtArgs {
 
 /// Parse UniProt FASTA header →  (accession, protein_name, organism, gene)
 /// Handles: >sp|P04637|P53_HUMAN Cellular tumor antigen p53 OS=Homo sapiens OX=9606 GN=TP53 ...
-fn parse_uniprot_header(header: &str) -> (String, String, String, String) {
+pub(crate) fn parse_uniprot_header(header: &str) -> (String, String, String, String) {
     let parts: Vec<&str> = header.splitn(3, '|').collect();
     let (acc, rest) = if parts.len() == 3 {
         (parts[1].to_string(), parts[2])
@@ -2260,22 +2260,18 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
 
-    const MAX_INDEX_TEXT: usize = 1_900_000_000;
-    const ESTIMATED_BYTES_PER_AA: f64 = 20.0;
-
     let n_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let n_threads = args.threads.unwrap_or(n_cpus).max(1);
-
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
-        .build_global()
-        .unwrap_or(());
+    let n_threads = args
+        .threads
+        .unwrap_or(n_cpus)
+        .max(1)
+        .min(n_cpus);
 
     let t0 = Instant::now();
 
-    println!("bit-pep RunProt  (FM-index TSV peptide -> protein mapping)");
+    println!("bit-pep RunProt  (fast multi-peptide protein mapping)");
     println!("============================================================");
     println!("  Threads : {} (of {} logical CPUs)", n_threads, n_cpus);
 
@@ -2365,22 +2361,27 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
 
     println!("  {} peptide rows read", rows.len());
 
-    let memory_gb = args.memory_gb.unwrap_or(16.0).max(1.0);
-    let memory_budget_bytes = memory_gb * 1024.0 * 1024.0 * 1024.0;
-    let memory_limited_text =
-        (memory_budget_bytes * 0.75 / ESTIMATED_BYTES_PER_AA) as usize;
-    let chunk_limit = memory_limited_text
-        .min(MAX_INDEX_TEXT)
-        .max(10_000_000);
+    use std::sync::Arc;
 
-    println!("\n[3/4] Indexing proteome in chunks...");
-    println!("  Memory budget : {:.1} GB", memory_gb);
-    println!(
-        "  Index chunk   : {:.0} M amino acids (hard maximum {:.0} M)",
-        chunk_limit as f64 / 1_000_000.0,
-        MAX_INDEX_TEXT as f64 / 1_000_000.0
-    );
-    println!("  Suffix-array construction uses {} threads.", n_threads);
+    let peptide_strings: Vec<String> = rows
+        .iter()
+        .map(|r| normalize_peptide(&r[0]))
+        .collect();
+    let peptide_bytes: Vec<Vec<u8>> = peptide_strings
+        .iter()
+        .map(|p| p.as_bytes().to_vec())
+        .collect();
+    let (automaton, seeds) = protein_scan::build_seed_automaton(&peptide_strings, args.fuzzy_mismatches);
+    let peptides = Arc::new(peptide_bytes);
+    let seeds = Arc::new(seeds);
+
+    println!("\n[3/4] Scanning proteome...");
+    println!("  Algorithm        : multi-pattern seed automaton + direct verification");
+    println!("  Threads          : {}", n_threads);
+    println!("  Index memory     : none; no FM-index or proteome chunking");
+    if args.memory_gb.is_some() {
+        println!("  Memory budget    : {:.1} GB (not needed by streaming mapper)", args.memory_gb.unwrap());
+    }
 
     let out_file = std::fs::File::create(&out_path)
         .map_err(|e| format!("Cannot create output file: {}", e))?;
@@ -2393,15 +2394,9 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     )
     .map_err(|e| format!("Cannot write TSV header: {}", e))?;
 
-    // Protein accession -> all matched 1-based positions.
-    // Only proteins hit by submitted peptides are retained here.
     let mut all_hits: Vec<HashMap<String, Vec<usize>>> =
         (0..rows.len()).map(|_| HashMap::new()).collect();
-
-    // Only one entry per matched accession is needed for species reporting.
     let mut hit_accession_species: HashMap<String, String> = HashMap::new();
-
-    // This is small compared with the protein sequences: one counter per species.
     let mut total_proteins_by_species: HashMap<String, usize> = HashMap::new();
 
     let mut fasta_reader = bit_pop::fasta::FastaReader::new(
@@ -2409,82 +2404,77 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     )
     .map_err(|e| format!("Cannot read FASTA: {}", e))?;
 
-    let mut chunk_seqs: Vec<(String, String)> = Vec::new();
-    let mut chunk_aa = 0usize;
+    let mut batch: Vec<(String, String)> = Vec::with_capacity(250_000);
+    const BATCH_PROTEINS: usize = 250_000;
     let mut total_proteins = 0usize;
-    let mut chunk_no = 0usize;
-    let mut total_index_time = 0.0f64;
-    let mut total_mapping_time = 0.0f64;
+    let mut scanned_aa = 0usize;
+    let mut estimated_total_proteins = None;
+    let t_scan = Instant::now();
 
-    while let Some(result) = fasta_reader.next() {
-        let (header_line, seq) =
-            result.map_err(|e| format!("FASTA read error: {}", e))?;
-
-        let normalized = normalize_il(&seq);
-        let seq_len = normalized.len();
-
-        let (_acc, _pname, organism, _gene) = parse_uniprot_header(&header_line);
-        let organism = if organism.is_empty() {
-            "unknown".to_string()
-        } else {
-            organism
-        };
-
-        *total_proteins_by_species
-            .entry(organism.clone())
-            .or_insert(0) += 1;
-        total_proteins += 1;
-
-        if !chunk_seqs.is_empty() && chunk_aa.saturating_add(seq_len) > chunk_limit {
-            chunk_no += 1;
-            let (it, mt) = process_protein_chunk(
-                &chunk_seqs,
-                &rows,
-                &mut all_hits,
-                &mut hit_accession_species,
-                args.fuzzy_mismatches,
-                n_threads,
-                chunk_no,
-                total_proteins,
-            )?;
-            total_index_time += it;
-            total_mapping_time += mt;
-            chunk_seqs.clear();
-            chunk_aa = 0;
+    loop {
+        batch.clear();
+        while batch.len() < BATCH_PROTEINS {
+            match fasta_reader.next() {
+                Some(result) => {
+                    let (header_line, seq) =
+                        result.map_err(|e| format!("FASTA read error: {}", e))?;
+                    scanned_aa += seq.len();
+                    let organism = parse_uniprot_organism(&header_line);
+                    *total_proteins_by_species.entry(organism.to_string()).or_insert(0) += 1;
+                    total_proteins += 1;
+                    batch.push((header_line, normalize_il_owned(seq)));
+                }
+                None => break,
+            }
         }
 
-        chunk_aa = chunk_aa.saturating_add(seq_len);
-        chunk_seqs.push((header_line, normalized));
+        if batch.is_empty() { break; }
 
-        if total_proteins % 1_000_000 == 0 {
-            println!(
-                "  Read {:>12} proteins; current chunk {:>10.1} M AA",
-                total_proteins,
-                chunk_aa as f64 / 1_000_000.0
-            );
-        }
-    }
-
-    if !chunk_seqs.is_empty() {
-        chunk_no += 1;
-        let (it, mt) = process_protein_chunk(
-            &chunk_seqs,
-            &rows,
-            &mut all_hits,
-            &mut hit_accession_species,
+        let batch_hits = protein_scan::scan_batch(
+            &batch,
+            Arc::clone(&automaton),
+            Arc::clone(&seeds),
+            Arc::clone(&peptides),
             args.fuzzy_mismatches,
             n_threads,
-            chunk_no,
-            total_proteins,
-        )?;
-        total_index_time += it;
-        total_mapping_time += mt;
+        );
+
+        for (row, acc, organism, positions) in batch_hits {
+            hit_accession_species.entry(acc.clone()).or_insert(organism);
+            let target = all_hits[row].entry(acc).or_default();
+            target.extend(positions);
+            target.sort_unstable();
+            target.dedup();
+        }
+
+        if estimated_total_proteins.is_none() && total_proteins >= BATCH_PROTEINS {
+            let file_bytes = std::fs::metadata(&fasta_path).map(|m| m.len()).unwrap_or(0) as f64;
+            let observed_bytes = batch.iter().map(|(h, s)| h.len() + s.len() + 2 + s.len() / 60).sum::<usize>() as f64;
+            if observed_bytes > 0.0 {
+                let est = (file_bytes / (observed_bytes / batch.len() as f64)).round() as usize;
+                estimated_total_proteins = Some(est.max(total_proteins));
+                let rate = total_proteins as f64 / t_scan.elapsed().as_secs_f64().max(1e-9);
+                let eta = (est.saturating_sub(total_proteins) as f64 / rate).max(0.0);
+                println!("  Estimated total proteins: {:.1} M", est as f64 / 1e6);
+                println!("  Current rate           : {:.2} M proteins/s", rate / 1e6);
+                println!("  Estimated scan time    : {}", format_duration(eta));
+            }
+        }
+
+        if total_proteins % 1_000_000 < BATCH_PROTEINS {
+            let elapsed = t_scan.elapsed().as_secs_f64().max(1e-9);
+            let rate = total_proteins as f64 / elapsed;
+            let eta = estimated_total_proteins
+                .map(|n| n.saturating_sub(total_proteins) as f64 / rate)
+                .unwrap_or(0.0);
+            println!("  Scanned {:>12} proteins | {:>10.1} G AA | {:.2} M prot/s | ETA {}",
+                total_proteins, scanned_aa as f64 / 1e9, rate / 1e6, format_duration(eta));
+        }
     }
 
-    println!(
-        "  {} proteins processed in {} index chunks",
-        total_proteins, chunk_no
-    );
+    let scan_time = t_scan.elapsed().as_secs_f64();
+    println!("  {} proteins scanned in {:.2}s ({:.2} G AA/s)",
+        total_proteins, scan_time, scanned_aa as f64 / 1e9 / scan_time.max(1e-9));
 
     let mut n_mapped = 0usize;
     let mut n_occurrences = 0usize;
@@ -2652,8 +2642,6 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     println!("    shared (>1 prot): {}", n_shared);
     println!("  Unmapped          : {}", rows.len() - n_mapped);
     println!("  Total occurrences : {}", n_occurrences);
-    println!("  Indexing time     : {:.2}s", total_index_time);
-    println!("  Mapping time      : {:.2}s", total_mapping_time);
     println!("  Total time        : {:.2}s", total);
     println!("  RAM               : {:.0} MB", rss_mb());
 
@@ -2716,115 +2704,35 @@ pub fn cmd_run_prot(args: &RunProtArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn process_protein_chunk(
-    chunk_seqs: &[(String, String)],
-    rows: &[Vec<String>],
-    all_hits: &mut [HashMap<String, Vec<usize>>],
-    hit_accession_species: &mut HashMap<String, String>,
-    fuzzy_mismatches: usize,
-    n_threads: usize,
-    chunk_no: usize,
-    total_proteins: usize,
-) -> Result<(f64, f64), String> {
-    use rayon::prelude::*;
-    use std::collections::HashMap;
+fn format_duration(seconds: f64) -> String {
+    let seconds = seconds.max(0.0) as u64;
+    if seconds < 60 { return format!("{}s", seconds); }
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes < 60 { return format!("{}m {:02}s", minutes, seconds); }
+    format!("{}h {:02}m", minutes / 60, minutes % 60)
+}
 
-    let t_index = Instant::now();
-
-    let mut bp = bit_pop::BitPop::new(5);
-    bp.set_protein_mode(true);
-
-    let mut meta: HashMap<u32, (String, String)> =
-        HashMap::with_capacity(chunk_seqs.len());
-
-    for (header, seq) in chunk_seqs {
-        let (acc, _pname, organism, _gene) = parse_uniprot_header(header);
-        let organism = if organism.is_empty() {
-            "unknown".to_string()
-        } else {
-            organism
-        };
-        let gid = bp.add_genome(&acc, seq);
-        meta.insert(gid, (acc, organism));
-    }
-
-    bp.build_parallel();
-
-    let index_time = t_index.elapsed().as_secs_f64();
-    let t_map = Instant::now();
-
-    let chunk_hits: Vec<(usize, Vec<(String, String, Vec<usize>)>)> = rows
-        .par_iter()
-        .enumerate()
-        .filter_map(|(row_index, cols)| {
-            let peptide = normalize_peptide(&cols[0]);
-            if peptide.is_empty() {
-                return None;
-            }
-
-            let mut by_protein: HashMap<u32, Vec<usize>> = HashMap::new();
-
-            if fuzzy_mismatches == 0 {
-                for (gid, pos0) in bp.find_peptide_exact(&peptide) {
-                    by_protein
-                        .entry(gid)
-                        .or_default()
-                        .push(pos0 as usize + 1);
-                }
-            } else {
-                for (gid, pos0, _mismatches) in
-                    bp.find_peptide_fuzzy(&peptide, fuzzy_mismatches)
-                {
-                    by_protein
-                        .entry(gid)
-                        .or_default()
-                        .push(pos0 as usize + 1);
-                }
-            }
-
-            if by_protein.is_empty() {
-                None
-            } else {
-                let mut hits = Vec::with_capacity(by_protein.len());
-                for (gid, mut positions) in by_protein {
-                    positions.sort_unstable();
-                    positions.dedup();
-                    if let Some((acc, organism)) = meta.get(&gid) {
-                        hits.push((acc.clone(), organism.clone(), positions));
-                    }
-                }
-                Some((row_index, hits))
-            }
-        })
-        .collect();
-
-    for (row_index, hits) in chunk_hits {
-        let entry = &mut all_hits[row_index];
-        for (acc, organism, positions) in hits {
-            hit_accession_species
-                .entry(acc.clone())
-                .or_insert(organism);
-            let target = entry.entry(acc).or_default();
-            target.extend(positions);
-            target.sort_unstable();
-            target.dedup();
+fn normalize_il_owned(sequence: String) -> String {
+    let mut bytes = sequence.into_bytes();
+    let mut n = 0;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() {
+            bytes[n] = if b == b'I' || b == b'i' { b'L' } else { b.to_ascii_uppercase() };
+            n += 1;
         }
     }
+    bytes.truncate(n);
+    unsafe { String::from_utf8_unchecked(bytes) }
+}
 
-    let map_time = t_map.elapsed().as_secs_f64();
-
-    println!(
-        "  Chunk {:>4}: {:>10} proteins | {:>8.1} M AA | index {:>7.1}s | map {:>7.1}s | processed {:>12}",
-        chunk_no,
-        chunk_seqs.len(),
-        chunk_seqs.iter().map(|(_, s)| s.len()).sum::<usize>() as f64 / 1_000_000.0,
-        index_time,
-        map_time,
-        total_proteins
-    );
-
-    let _ = n_threads;
-    Ok((index_time, map_time))
+fn parse_uniprot_organism(header: &str) -> &str {
+    let rest = header.splitn(3, '|').nth(2).unwrap_or(header);
+    rest.split_once(" OS=")
+        .map(|(_, s)| s.split(" OX=").next().unwrap_or(s).split(" GN=").next().unwrap_or(s).trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown")
 }
 
 fn normalize_il(sequence: &str) -> String {

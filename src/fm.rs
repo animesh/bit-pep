@@ -22,7 +22,7 @@ fn build_suffix_array(s: &[u8], threads: usize) -> Vec<usize> {
     // s is u8 with $=0, A=1, C=2, G=3, T=4
     // libsais treats last char as implicit sentinel (smallest)
     // For SmallAlphabet (u8), use for_text (immutable)
-    let mut sa_buffer: Vec<i32> = vec![0; n];
+    let mut sa_buffer: Vec<i64> = vec![0; n];
 
     let result = SuffixArrayConstruction::for_text(s)
         .in_borrowed_buffer(&mut sa_buffer)
@@ -123,24 +123,19 @@ fn build_bwt_from_sa_parallel(sa: &[usize], s: &[u8], num_threads: usize) -> Vec
         return vec![s[0]];
     }
 
-    let chunk_size = n.div_ceil(num_threads);
-    let num_chunks = ((n - 1) / chunk_size) + 1;
-
-    let bwt_chunks: Vec<Vec<u8>> = (0..num_chunks)
-        .into_par_iter()
-        .map(|chunk_idx| {
+    let chunk_size = n.div_ceil(num_threads.max(1));
+    let mut bwt = vec![0u8; n];
+    bwt.par_chunks_mut(chunk_size)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
             let start = chunk_idx * chunk_size;
-            let end = (start + chunk_size).min(n);
-            let mut chunk = vec![0u8; end - start];
-            for (i, &sa_i) in sa.iter().enumerate().skip(start).take(end - start) {
+            for (offset, &sa_i) in sa[start..start + chunk.len()].iter().enumerate() {
                 let prev = if sa_i == 0 { n - 1 } else { sa_i - 1 };
-                chunk[i - start] = s[prev];
+                chunk[offset] = s[prev];
             }
-            chunk
-        })
-        .collect();
+        });
 
-    bwt_chunks.into_iter().flatten().collect()
+    bwt
 }
 
 // --- Occ Counter (Rank Sampling) ---
@@ -350,10 +345,20 @@ impl FmIndex {
         }
     }
 
-    /// Build FM-index in parallel using rayon.
-    /// Parallelizes BWT construction and OccCounter building.
+    /// Build FM-index in parallel using the requested thread count.
+    /// Parallelizes suffix-array construction, BWT construction and OccCounter building.
     /// Input: genomes as &[u8] with A=1, C=2, G=3, T=4 (NO sentinel in input)
     pub fn build_parallel(genomes: &[(&str, &[u8])]) -> Self {
+        Self::build_parallel_with_threads(genomes, rayon::current_num_threads())
+    }
+
+    /// Build FM-index in parallel using an explicit thread count.
+    /// The suffix-array implementation uses this count directly for libsais/OpenMP;
+    /// it is not inferred from the ambient Rayon pool.
+    pub fn build_parallel_with_threads(
+        genomes: &[(&str, &[u8])],
+        num_threads: usize,
+    ) -> Self {
         let mut s: Vec<u8> = Vec::new();
         let mut genome_boundaries: Vec<(usize, usize, u32)> = Vec::new();
 
@@ -372,7 +377,7 @@ impl FmIndex {
         }
         s.push(0);
 
-        let num_threads = rayon::current_num_threads();
+        let num_threads = num_threads.max(1);
         let sa = build_suffix_array(&s, num_threads);
         let bwt = build_bwt_from_sa_parallel(&sa, &s, num_threads);
 

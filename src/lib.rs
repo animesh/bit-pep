@@ -707,7 +707,7 @@ impl BitPop {
         let genome_id = self.genomes.len() as u32;
         let encoded = if self.protein_mode { encode_sequence_aa(sequence) } else { encode_sequence(sequence) };
         self.genome_names.insert(genome_id, name.to_string());
-        self.genomes.insert(genome_id, encoded.clone());
+        self.genomes.insert(genome_id, encoded);
         genome_id
     }
 
@@ -752,32 +752,39 @@ impl BitPop {
         }
     }
 
-    /// Finalize the index with parallel FM-Index build using rayon.
-    /// Parallelizes BWT construction and OccCounter building.
+    /// Finalize the index with parallel FM-Index build using the ambient Rayon thread count.
+    /// For callers that need a specific number of threads, use build_parallel_with_threads().
     pub fn build_parallel(&mut self) {
+        self.build_parallel_with_threads(rayon::current_num_threads());
+    }
+
+    /// Finalize the index with an explicit number of threads.
+    /// The requested count is passed all the way to libsais/OpenMP.
+    pub fn build_parallel_with_threads(&mut self, num_threads: usize) {
         self.recompute_k();
 
-        let mut genome_list: Vec<(u32, String, Vec<u8>)> = self
+        let mut genome_list: Vec<(u32, &str, &[u8])> = self
             .genomes
             .iter()
             .map(|(gid, seq)| {
-                let name = self.genome_names.get(gid).cloned().unwrap_or_default();
-                (*gid, name, seq.to_vec())
+                (
+                    *gid,
+                    self.genome_names.get(gid).map(|s| s.as_str()).unwrap_or(""),
+                    seq.as_slice(),
+                )
             })
             .collect();
         genome_list.sort_by_key(|(gid, _, _)| *gid);
 
-        let genomes: Vec<(String, Vec<u8>)> = genome_list
-            .into_par_iter()
+        let genome_refs: Vec<(&str, &[u8])> = genome_list
+            .into_iter()
             .map(|(_, name, seq)| (name, seq))
             .collect();
 
-        let genome_refs: Vec<(&str, &[u8])> = genomes
-            .iter()
-            .map(|(name, seq)| (name.as_str(), seq.as_slice()))
-            .collect();
-
-        self.fm_index = Some(FmIndex::build_parallel(&genome_refs));
+        self.fm_index = Some(FmIndex::build_parallel_with_threads(
+            &genome_refs,
+            num_threads.max(1),
+        ));
 
         if matches!(self.fuzzy_method, FuzzyMethod::Neighborhood) {
             self.build_neighborhood_hash();
